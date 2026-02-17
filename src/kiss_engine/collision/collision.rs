@@ -1,12 +1,10 @@
 use cgmath::{Vector3, InnerSpace};
-use std::io::Write;
 
 // Reduce iterations to cut CPU cost; still iterative but cheaper.
 const MAX_INTERSECT_PUSHBACK_ITERATIONS: usize = 12;
 const EXTRA_PENETRATION_ADD: f32 = 0.02;
 // Step-up parameters (stairs)
 const STEP_HEIGHT: f32 = 0.9; // Match main.rs for reliable stepping and ground detection
-const MAX_STEP_SLOPE_COS: f32 = 0.64; // ~50 degrees
 const STEP_CLEARANCE: f32 = 0.02;
 
 #[derive(Clone, Copy, Debug)]
@@ -71,9 +69,15 @@ pub enum PlayerMode { Flying, Walk }
 pub fn resolve_player_collision(pos: &mut Vector3<f32>, height_provider: &dyn HeightProvider, player_radius: f32, _step_height: f32) {
 	let ground_z = height_provider.ground_height(pos.x, pos.y, Some(pos.z));
 	let min_z = ground_z + player_radius;
-	// If below ground, snap to ground and avoid smoothing which causes oscillation.
 	if pos.z < min_z {
-		pos.z = min_z;
+		let diff = min_z - pos.z;
+		// Small corrections (thin floors, normal ground): snap instantly.
+		// Large corrections (> 0.5): cap to avoid teleporting through ceilings.
+		if diff <= 0.5 {
+			pos.z = min_z;
+		} else {
+			pos.z += 0.3;
+		}
 	}
 }
 
@@ -140,7 +144,7 @@ impl MeshHeightProvider {
 		let inv_denom = 1.0 / denom;
 		let u = (dot11 * dot02 - dot01 * dot12) * inv_denom;
 		let v = (dot00 * dot12 - dot01 * dot02) * inv_denom;
-		(u >= 0.0) && (v >= 0.0) && (u + v <= 1.0)
+		(u >= -1e-4) && (v >= -1e-4) && (u + v <= 1.0 + 1e-4)
 	}
 
 	fn setup_box(
@@ -230,36 +234,45 @@ impl MeshHeightProvider {
 				let edge1 = b - a;
 				let edge2 = c - a;
 				let n = edge1.cross(edge2);
+				let n_mag = n.magnitude();
+				if n_mag < 1e-6 { continue; } // degenerate triangle
+				let normal = n / n_mag;
 
-				// treat mostly-vertical triangles as walls (surface normal mostly horizontal)
-				if n.z.abs() > 0.5 { continue; }
+				// Floor/ceiling triangles (normal mostly vertical) are handled
+				// by ground_height; skip horizontal pushback for them.
+				if normal.z.abs() > 0.7 { continue; }
 
-				// Attempt step-up (stairs) when this triangle blocks horizontal movement
-				let tri_top_z = a.z.max(b.z).max(c.z);
-				let foot_ground_z = self.ground_height(pos.x, pos.y, Some(pos.z));
-				let delta = tri_top_z - foot_ground_z;
-				let normal = {
-					let nn = n;
-					let mag = nn.magnitude();
-					if mag > 1e-6 { nn / mag } else { nn }
-				};
-				let slope_ok = normal.z >= MAX_STEP_SLOPE_COS;
-				if delta > 0.0 && delta <= STEP_HEIGHT && slope_ok {
-					let mut stepped_pos = *pos;
-					stepped_pos.z = foot_ground_z + delta + STEP_CLEARANCE;
+				// Wall-like triangle — check vertical overlap with player.
+				// Player eye/camera is at pos.z; feet are ~0.5 below.
+				const EYE_HEIGHT: f32 = 0.5;
+				let foot_z = pos.z - EYE_HEIGHT;
+				let tri_min_z = a.z.min(b.z).min(c.z);
+				let tri_max_z = a.z.max(b.z).max(c.z);
+				// Skip walls entirely above the player's head or below their feet
+				if foot_z > tri_max_z + 0.15 || pos.z + 0.1 < tri_min_z { continue; }
 
-					// For very small steps, skip headroom check entirely (for spiral/tight stairs)
-					let skip_headroom = delta < 0.2;
-					let headroom = if skip_headroom { 0.0 } else { 0.2 };
-					let _head_clear = true;
-					let head_top = stepped_pos.z + headroom;
-					// Check for any triangle intersecting a vertical AABB above stepped_pos using BVH if available
+				let closest = closest_point_on_triangle(*pos, a, b, c);
+				let dx = pos.x - closest.x;
+				let dy = pos.y - closest.y;
+				let horiz_dist = (dx*dx + dy*dy).sqrt();
+
+				// Only process if within collision radius
+				if horiz_dist >= radius { continue; }
+
+				// --- Step-up check ---
+				// If the wall top is within STEP_HEIGHT of player feet,
+				// step up over it instead of pushing back.
+				let step_delta = tri_max_z - foot_z;
+				if step_delta > 0.01 && step_delta <= STEP_HEIGHT {
+					let new_foot_z = tri_max_z + STEP_CLEARANCE;
+					let stepped_z = new_foot_z + EYE_HEIGHT;
+
+					// Quick headroom check for taller steps
 					let mut head_clear = true;
-					if !skip_headroom {
-						let _head_top = stepped_pos.z + headroom;
+					if step_delta > 0.35 {
 						let head_aabb = Aabb {
-							min: Vector3::new(stepped_pos.x - radius, stepped_pos.y - radius, stepped_pos.z),
-							max: Vector3::new(stepped_pos.x + radius, stepped_pos.y + radius, head_top),
+							min: Vector3::new(pos.x - radius * 0.6, pos.y - radius * 0.6, stepped_z),
+							max: Vector3::new(pos.x + radius * 0.6, pos.y + radius * 0.6, stepped_z + 0.8),
 						};
 						let mut head_overlaps: Vec<usize> = Vec::new();
 						if let Some(ref bv) = self.bvh {
@@ -273,92 +286,36 @@ impl MeshHeightProvider {
 							let oi1 = idx[ot*3 + 1] as usize;
 							let oi2 = idx[ot*3 + 2] as usize;
 							if oi0 >= posv.len() || oi1 >= posv.len() || oi2 >= posv.len() { continue; }
-							let oa = posv[oi0];
-							let ob = posv[oi1];
-							let oc = posv[oi2];
-							let tri_min = Vector3::new(oa.x.min(ob.x).min(oc.x), oa.y.min(ob.y).min(oc.y), oa.z.min(ob.z).min(oc.z));
-							let tri_max = Vector3::new(oa.x.max(ob.x).max(oc.x), oa.y.max(ob.y).max(oc.y), oa.z.max(ob.z).max(oc.z));
-							let tri_box = Aabb { min: tri_min, max: tri_max };
-							if head_aabb.intersects(&tri_box) {
+							let oa = posv[oi0]; let ob = posv[oi1]; let oc = posv[oi2];
+							let oe1 = ob - oa; let oe2 = oc - oa;
+							let on = oe1.cross(oe2);
+							let omag = on.magnitude();
+							if omag < 1e-6 { continue; }
+							let onorm = on / omag;
+							// Only ceiling-like triangles block headroom
+							if onorm.z > -0.5 { continue; }
+							let omin_z = oa.z.min(ob.z).min(oc.z);
+							if omin_z > stepped_z - 0.05 && omin_z < stepped_z + 0.8 {
 								head_clear = false;
 								break;
 							}
 						}
 					}
 
-					if delta < 0.2 {
-						// For micro steps, if horizontal move is possible, allow step-up
-						if stepped_pos.x != prev_pos.x || stepped_pos.y != prev_pos.y {
-							pos.z = stepped_pos.z;
-							if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("collision_log.txt") {
-								let _ = writeln!(file, "[collision] step accepted t={} new_z={:.3}", t, pos.z);
-							}
-							continue;
-						}
-					}
-					// For larger steps, do full step box collision check
-					if delta >= 0.2 {
-						let step_dims = dims;
-						if let Some((_s0, _s1, _whole, step_box)) = self.setup_box(prev_pos, stepped_pos, step_dims, offset, radius) {
-							let mut overlaps: Vec<usize> = Vec::new();
-							if let Some(ref bv) = self.bvh {
-								bv.query_aabb(&step_box, &mut overlaps);
-							} else {
-								overlaps = (0..(idx.len() / 3)).collect();
-							}
-							let mut blocked = false;
-							for &ot in overlaps.iter() {
-								// ignore the triangle we're attempting to step onto
-								if ot == t { continue; }
-								let oi0 = idx[ot*3] as usize;
-								let oi1 = idx[ot*3 + 1] as usize;
-								let oi2 = idx[ot*3 + 2] as usize;
-								if oi0 >= posv.len() || oi1 >= posv.len() || oi2 >= posv.len() { continue; }
-								let oa = posv[oi0];
-								let ob = posv[oi1];
-								let oc = posv[oi2];
-								// full 3D distance from stepped sphere center to triangle
-								let closest = closest_point_on_triangle(stepped_pos, oa, ob, oc);
-								let diff = stepped_pos - closest;
-								let dist = diff.magnitude();
-								// if triangle penetrates sphere beyond a small epsilon, it's blocked
-								if dist < (radius - 0.01) {
-									blocked = true;
-									// debug: log blocking triangle and metrics to file
-									if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("collision_log.txt") {
-										let _ = writeln!(file, "[collision] step blocked t={} dist={:.3} radius={:.3}", ot, dist, radius);
-									}
-									break;
-								}
-							}
-							if !blocked && head_clear {
-								pos.z = stepped_pos.z;
-								if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("collision_log.txt") {
-									let _ = writeln!(file, "[collision] step accepted t={} new_z={:.3}", t, pos.z);
-								}
-								continue;
-							}
-						}
+					if head_clear {
+						pos.z = stepped_z;
+						continue; // skip pushback, allow horizontal movement
 					}
 				}
 
-				let closest = closest_point_on_triangle(*pos, a, b, c);
-
-				let dx = pos.x - closest.x;
-				let dy = pos.y - closest.y;
-				let horiz_dist = (dx*dx + dy*dy).sqrt();
-
-				// Reduce the vertical overlap buffer so the box is less tall
-				let tri_min_z = a.z.min(b.z).min(c.z) - 0.2;
-				let tri_max_z = a.z.max(b.z).max(c.z) + 0.2;
-				if pos.z < tri_min_z || pos.z > tri_max_z { continue; }
-
-				if horiz_dist < radius && horiz_dist > 1e-6 {
+				// --- Horizontal pushback ---
+				if horiz_dist > 1e-6 {
 					let push = (radius - horiz_dist + EXTRA_PENETRATION_ADD).max(0.0);
 					pos.x += dx / horiz_dist * push;
 					pos.y += dy / horiz_dist * push;
 					moved = true;
-				} else if horiz_dist < 1e-6 {
+				} else {
+					// Exactly overlapping — push along movement direction
 					let mvx = pos.x - prev_pos.x;
 					let mvy = pos.y - prev_pos.y;
 					let mv_len = (mvx*mvx + mvy*mvy).sqrt();
@@ -450,13 +407,30 @@ impl HeightProvider for MeshHeightProvider {
 				let edge1 = v1 - v0;
 				let edge2 = v2 - v0;
 				let n = edge1.cross(edge2);
-				if n.z <= 0.0 { continue; }
+				// Accept both upward and downward facing normals (thin floors
+				// may only have one winding). Skip near-vertical triangles.
 				if n.z.abs() < 1e-6 { continue; }
 				let z = v0.z - (n.x * (x - v0.x) + n.y * (y - v0.y)) / n.z;
 				if let Some(curz) = current_z {
-					if z > curz + 0.5 { continue; }
+					// Skip floors more than 0.6 above player (don't detect upper stories)
+					if z > curz + 0.6 { continue; }
 				}
-				best = Some(best.map_or(z, |b| b.max(z)));
+				// Pick the highest floor that is at or below the player
+				// (i.e. the floor we're actually standing on, not one far below)
+				best = Some(match best {
+					None => z,
+					Some(prev_best) => {
+						if let Some(curz) = current_z {
+							// Both below player → pick higher one (closer to feet)
+							// One above, one below → pick the one closer to player Z
+							let da = (curz - z).abs();
+							let db = (curz - prev_best).abs();
+							if da < db { z } else { prev_best }
+						} else {
+							prev_best.max(z)
+						}
+					}
+				});
 			}
 		}
 		best.unwrap_or(0.0)

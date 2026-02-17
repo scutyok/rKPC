@@ -821,7 +821,6 @@ impl App {
         let prev_pos = self.camera.position;
 
         self.on_ground = false;
-        // ...existing code...
         if self.input.forward {
             self.camera.position = self.camera.position + front_flat * speed;
         }
@@ -834,7 +833,7 @@ impl App {
         if self.input.right {
             self.camera.position = self.camera.position + right * speed;
         }
-        // vertical movement only in Flying mode
+        // vertical movement only in flying mode
         if self.player_mode == collision::PlayerMode::Flying {
             if self.input.up {
                 self.camera.position.z += speed;
@@ -844,10 +843,12 @@ impl App {
             }
             self.z_vel = 0.0;
         } else {
-            // Walk mode: apply gravity to vertical velocity and integrate
+            // walk mode: apply gravity to vertical velocity and integrate
             const GRAVITY: f32 = 9.8 * 3.0;
             self.z_vel -= GRAVITY * dt;
-            // Jumping (use on_ground flag)
+            // clamp to terminal velocity to prevent falling through thin floors
+            self.z_vel = self.z_vel.max(-8.0);
+            // jumping (use on_ground flag)
             if self.input.up && self.on_ground {
                 self.z_vel = 7.5; // jump velocity, tweak as needed
                 self.input.up = false; // prevent holding space from multi-jumping
@@ -856,42 +857,60 @@ impl App {
             self.camera.position.z += self.z_vel * dt;
         }
 
-        // Apply wall collisions (horizontal) then ground collision when in Walk mode
+        // apply wall collisions (horizontal) then ground collision when in walk mode
         if self.player_mode == collision::PlayerMode::Walk {
             if let Some(mesh) = &self.mesh_provider {
                 let before = self.camera.position;
-                // Only pass 3 arguments: prev_pos, &mut self.camera.position, 0.25 (width)
+                // only pass 3 arguments: prev_pos, &mut self.camera.position, 0.25 (width)
                 mesh.resolve_player_movement(prev_pos, &mut self.camera.position, 0.25);
                 let horiz_blocked = (before.x != self.camera.position.x || before.y != self.camera.position.y)
                     && (self.camera.position.x == prev_pos.x && self.camera.position.y == prev_pos.y);
                 if horiz_blocked {
-                    let step_height = 0.9; // Further increased for small ledges
-                    let mut try_pos = prev_pos;
-                    try_pos.z += step_height;
+                    let step_height = 0.9;
+                    // try intended horizontal move at elevated Z to step over obstacle
+                    let mut try_pos = before;
+                    try_pos.z = prev_pos.z + step_height;
+                    let mut elevated_prev = prev_pos;
+                    elevated_prev.z += step_height;
                     let mut stepped_pos = try_pos;
-                    mesh.resolve_player_movement(prev_pos, &mut stepped_pos, 0.25);
+                    mesh.resolve_player_movement(elevated_prev, &mut stepped_pos, 0.25);
                     let ground_z = self.height_provider.ground_height(stepped_pos.x, stepped_pos.y, Some(stepped_pos.z));
-                    let min_z = ground_z + 0.5; // keep hitbox tall for vertical offset
+                    let min_z = ground_z + 0.5;
                     let dz = min_z - prev_pos.z;
                     if (stepped_pos.x != prev_pos.x || stepped_pos.y != prev_pos.y)
-                        && dz > 0.0 && dz <= step_height + 1e-3
+                        && dz > 0.0 && dz <= step_height + 0.1
                     {
                         self.camera.position = stepped_pos;
                         self.camera.position.z = min_z;
                     }
                 }
             }
-            let before_z = self.camera.position.z;
+            let _before_z = self.camera.position.z;
             collision::resolve_player_collision(&mut self.camera.position, self.height_provider.as_ref(), 0.25, 0.5);
-            let ground_z = self.height_provider.ground_height(self.camera.position.x, self.camera.position.y, Some(self.camera.position.z));
+            // check ground at current pos AND at prev_pos to catch thin floors
+            // the player may have fallen past during this frame.
+            let ground_z_cur = self.height_provider.ground_height(self.camera.position.x, self.camera.position.y, Some(self.camera.position.z));
+            let ground_z_prev = self.height_provider.ground_height(self.camera.position.x, self.camera.position.y, Some(prev_pos.z));
+            // if we were above a floor last frame but below it now, use that floor
+            let ground_z = if prev_pos.z >= ground_z_prev + 0.5 - 0.05 && self.camera.position.z < ground_z_prev + 0.5 {
+                ground_z_prev.max(ground_z_cur)
+            } else {
+                ground_z_cur
+            };
             let min_z = ground_z + 0.5;
-            if self.camera.position.z < min_z - 0.05 {
-                // Only snap down if clearly below ground
-                self.camera.position.z = min_z;
-                self.z_vel = 0.0;
+            if self.camera.position.z < min_z {
+                let diff = min_z - self.camera.position.z;
+                // small corrections: snap instantly.
+                // large corrections (> 0.5): to prevent teleporting through ceilings.
+                if diff <= 0.5 {
+                    self.camera.position.z = min_z;
+                } else {
+                    self.camera.position.z += 0.3;
+                }
+                if self.z_vel < 0.0 { self.z_vel = 0.0; }
                 self.on_ground = true;
-            } else if (self.camera.position.z - min_z).abs() < 0.1 || self.camera.position.z < min_z + 0.01 {
-                // On or very near ground: stabilize position and velocity, no gravity
+            } else if self.camera.position.z < min_z + 0.15 && self.z_vel <= 0.0 {
+                // near ground and falling/stationary: land
                 self.camera.position.z = min_z;
                 self.z_vel = 0.0;
                 self.on_ground = true;
@@ -1021,8 +1040,6 @@ impl App {
                     });
                 });
         }
-
-        // ...overlay removed...
     }
 
     /// Reloads a new world file
