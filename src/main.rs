@@ -13,6 +13,7 @@ use rustKPC::dat_mesh;
 use rustKPC::dtx;
 use rustKPC::egui_renderer;
 use rustKPC::collision;
+use rustKPC::occlusion_culling;
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::CStr;
@@ -343,7 +344,42 @@ fn main() -> Result<()> {
                         app.run_ui(ctx, &mut mouse_locked);
                     });
                     egui_state.handle_platform_output(&window, full_output.platform_output);
-                    
+
+                    // Update GPU font texture if egui's atlas changed (full or partial)
+                    {
+                        let needs_update = full_output.textures_delta.set.iter()
+                            .any(|(id, _)| *id == egui::TextureId::default());
+                        if needs_update {
+                            // Get the FULL font atlas from egui context
+                            let (font_pixels, font_w, font_h) = egui_ctx.fonts(|fonts| {
+                                let image = fonts.image();
+                                let w = image.width() as u32;
+                                let h = image.height() as u32;
+                                let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+                                for &a in image.pixels.iter() {
+                                    let alpha = (a * 255.0).round().clamp(0.0, 255.0) as u8;
+                                    rgba.push(255u8);
+                                    rgba.push(255u8);
+                                    rgba.push(255u8);
+                                    rgba.push(alpha);
+                                }
+                                (rgba, w, h)
+                            });
+                            unsafe {
+                                egui_renderer.replace_font_texture(
+                                    &app.instance,
+                                    &app.device,
+                                    app.data.physical_device,
+                                    app.data.command_pool,
+                                    app.data.graphics_queue,
+                                    &font_pixels,
+                                    font_w,
+                                    font_h,
+                                ).unwrap();
+                            }
+                        }
+                    }
+
                     // Tessellate egui shapes into primitives for rendering
                     let clipped_primitives = egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
                     
@@ -404,12 +440,12 @@ fn main() -> Result<()> {
                                 mouse_locked = false;
                                 let _ = window.set_cursor_grab(CursorGrabMode::None);
                                 window.set_cursor_visible(true);
-                                // ensure collisions are active so player doesn't fall through while UI open
-                                app.player_mode = collision::PlayerMode::Walk;
                             } else {
                                 mouse_locked = true;
                                 let _ = window.set_cursor_grab(CursorGrabMode::Confined);
                                 window.set_cursor_visible(false);
+                                // Restore player mode from free cam toggle state
+                                app.player_mode = if app.is_free_cam { collision::PlayerMode::Flying } else { collision::PlayerMode::Walk };
                             }
                         }
                         PhysicalKey::Code(KeyCode::KeyW) if !app.world_chooser.visible => app.input.forward = pressed,
@@ -469,9 +505,14 @@ struct App {
     // Physics
     z_vel: f32,
     is_free_cam: bool,
+    show_fps: bool,
+    vsync: bool,
+    freeze_culling: bool,
+    saved_player_camera: Option<Camera>,
     eye_offset_walk: f32,
     player_fov: f32,
     fps: f32,
+    occlusion_culler: occlusion_culling::OcclusionCuller,
 }
 
 impl App {
@@ -522,6 +563,15 @@ impl App {
             (Box::new(collision::FlatGround) as Box<dyn collision::HeightProvider>, None)
         };
 
+        // Build occlusion culler AABBs before data is moved into Self
+        let initial_occlusion_culler = {
+            let mut culler = occlusion_culling::OcclusionCuller::new();
+            let positions: Vec<[f32; 3]> = data.vertices.iter().map(|v| [v.pos.x, v.pos.y, v.pos.z]).collect();
+            let groups: Vec<(u32, u32)> = data.draw_groups.iter().map(|g| (g.first_index, g.index_count)).collect();
+            culler.build_from_groups(&positions, &data.indices, &groups);
+            culler
+        };
+
         Ok(Self {
             entry,
             instance,
@@ -541,10 +591,15 @@ impl App {
             mesh_provider: initial_mesh_provider,
             z_vel: 0.0,
             is_free_cam: false,
+            show_fps: true,
+            vsync: true,
+            freeze_culling: true,
+            saved_player_camera: None,
             eye_offset_walk: 0.4,
             player_fov: 60.0,
             fps: 0.0,
             on_ground: false,
+            occlusion_culler: initial_occlusion_culler,
         })
     }
 
@@ -672,6 +727,45 @@ impl App {
 
         self.device.cmd_begin_render_pass(command_buffer, &info, vk::SubpassContents::SECONDARY_COMMAND_BUFFERS);
 
+        // Run frustum culling before issuing draw calls
+        // When free cam + freeze_culling, use the saved player camera for culling
+        // so you can fly around and see what the player would see culled
+        {
+            let (cull_view, cull_fov) = if self.is_free_cam && self.freeze_culling {
+                if let Some(ref saved) = self.saved_player_camera {
+                    (saved.view_matrix_with_offset(self.eye_offset_walk), self.player_fov)
+                } else {
+                    (self.camera.view_matrix_with_offset(0.0), 45.0)
+                }
+            } else {
+                let eye_offset = if self.player_mode == collision::PlayerMode::Walk && !self.is_free_cam {
+                    self.eye_offset_walk
+                } else { 0.0 };
+                let fov_deg = if self.player_mode == collision::PlayerMode::Walk && !self.is_free_cam {
+                    self.player_fov
+                } else { 45.0 };
+                (self.camera.view_matrix_with_offset(eye_offset), fov_deg)
+            };
+
+            #[rustfmt::skip]
+            let correction = Mat4::new(
+                1.0,  0.0,       0.0, 0.0,
+                0.0, -1.0,       0.0, 0.0,
+                0.0,  0.0, 1.0 / 2.0, 0.0,
+                0.0,  0.0, 1.0 / 2.0, 1.0,
+            );
+            // For frustum plane extraction, use the raw perspective (no Vulkan correction)
+            // The correction matrix distorts clip space and breaks Gribb-Hartmann plane extraction
+            let raw_proj = cgmath::perspective(
+                    Deg(cull_fov),
+                    self.data.swapchain_extent.width as f32 / self.data.swapchain_extent.height as f32,
+                    0.01,
+                    1000.0,
+                );
+            let vp = raw_proj * cull_view;
+            let frustum = occlusion_culling::Frustum::from_view_proj(&vp);
+            self.occlusion_culler.cull(&frustum);
+        }
 
         // Only render geometry when not loading
         if self.loading_state == LoadingState::Ready {
@@ -773,8 +867,12 @@ impl App {
             );
             self.device.cmd_draw_indexed(command_buffer, self.data.indices.len() as u32, 1, 0, 0, 0);
         } else {
-            // Draw each group with its texture
-            for group in &self.data.draw_groups {
+            // Draw each group with its texture, skipping frustum-culled groups
+            for (group_idx, group) in self.data.draw_groups.iter().enumerate() {
+                // Skip groups culled by frustum test
+                if !self.occlusion_culler.is_visible(group_idx) {
+                    continue;
+                }
                 // Get the descriptor set for this texture
                 let descriptor_set = if group.texture_index < self.data.level_textures.len() 
                     && !self.data.level_textures[group.texture_index].descriptor_sets.is_empty() 
@@ -937,6 +1035,107 @@ impl App {
             return;
         }
 
+        // FPS counter (top-right corner) — painted directly
+        if self.show_fps {
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("fps_overlay"),
+            ));
+            let text = format!("{:.0} FPS", self.fps);
+            let font_id = egui::FontId::proportional(16.0);
+            let galley = painter.layout_no_wrap(text, font_id, egui::Color32::YELLOW);
+            let screen = ctx.screen_rect();
+            let padding = egui::vec2(8.0, 4.0);
+            let text_pos = egui::pos2(
+                screen.max.x - galley.size().x - padding.x - 10.0,
+                5.0 + padding.y,
+            );
+            let bg_rect = egui::Rect::from_min_size(
+                text_pos - padding,
+                galley.size() + padding * 2.0,
+            );
+            painter.rect_filled(bg_rect, 4.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140));
+            painter.galley(text_pos, galley, egui::Color32::YELLOW);
+        }
+
+        // Draw FOV debug rays when freeze culling is active in free cam
+        if self.is_free_cam && self.freeze_culling {
+            if let Some(ref saved) = self.saved_player_camera {
+                let painter = ctx.layer_painter(egui::LayerId::new(
+                    egui::Order::Foreground,
+                    egui::Id::new("fov_rays"),
+                ));
+                let screen = ctx.screen_rect();
+                let sw = self.data.swapchain_extent.width as f32;
+                let sh = self.data.swapchain_extent.height as f32;
+                let aspect = sw / sh;
+
+                // Build the free cam's VP matrix (what we're actually rendering with)
+                let eye_offset = 0.0f32; // free cam has no eye offset
+                let free_view = self.camera.view_matrix_with_offset(eye_offset);
+                #[rustfmt::skip]
+                let correction = Mat4::new(
+                    1.0,  0.0,       0.0, 0.0,
+                    0.0, -1.0,       0.0, 0.0,
+                    0.0,  0.0, 1.0 / 2.0, 0.0,
+                    0.0,  0.0, 1.0 / 2.0, 1.0,
+                );
+                let free_proj = correction
+                    * cgmath::perspective(Deg(45.0), aspect, 0.01, 1000.0);
+                let vp = free_proj * free_view;
+
+                // Compute player frustum rays in world space
+                let saved_eye = vec3(
+                    saved.position.x,
+                    saved.position.y,
+                    saved.position.z + self.eye_offset_walk,
+                );
+                let half_fov_rad = (self.player_fov * 0.5f32).to_radians();
+                let saved_front = saved.front();
+                let saved_right = saved.right();
+                let ray_len = 50.0f32;
+
+                // Left and right frustum edge directions (horizontal plane)
+                let front_flat = vec3(saved_front.x, saved_front.y, 0.0).normalize();
+                let right_flat = vec3(saved_right.x, saved_right.y, 0.0).normalize();
+                let left_dir = (front_flat * half_fov_rad.cos() - right_flat * half_fov_rad.sin()).normalize();
+                let right_dir = (front_flat * half_fov_rad.cos() + right_flat * half_fov_rad.sin()).normalize();
+
+                // World-space endpoints
+                let origin = saved_eye;
+                let left_end = origin + left_dir * ray_len;
+                let right_end = origin + right_dir * ray_len;
+
+                // Project 3D point to screen using the free cam's VP matrix
+                let project = |world_pos: Vec3| -> Option<egui::Pos2> {
+                    let p = vp * cgmath::vec4(world_pos.x, world_pos.y, world_pos.z, 1.0);
+                    if p.w <= 0.001 { return None; } // behind camera
+                    let ndc_x = p.x / p.w;
+                    let ndc_y = p.y / p.w;
+                    // NDC to screen (accounting for Vulkan correction matrix)
+                    let sx = (ndc_x + 1.0) * 0.5 * screen.width() + screen.min.x;
+                    let sy = (ndc_y + 1.0) * 0.5 * screen.height() + screen.min.y;
+                    Some(egui::pos2(sx, sy))
+                };
+
+                let stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 255, 0));
+                // Draw left ray
+                if let (Some(p0), Some(p1)) = (project(origin), project(left_end)) {
+                    painter.line_segment([p0, p1], stroke);
+                }
+                // Draw right ray
+                if let (Some(p0), Some(p1)) = (project(origin), project(right_end)) {
+                    painter.line_segment([p0, p1], stroke);
+                }
+                // Draw front direction ray (dimmer)
+                let front_end = origin + front_flat * ray_len;
+                let front_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(0, 180, 0));
+                if let (Some(p0), Some(p1)) = (project(origin), project(front_end)) {
+                    painter.line_segment([p0, p1], front_stroke);
+                }
+            }
+        }
+
         // World chooser panel
         if self.world_chooser.visible {
             egui::TopBottomPanel::top("world_chooser")
@@ -948,26 +1147,59 @@ impl App {
                         ui.heading(egui::RichText::new("World Select").color(egui::Color32::WHITE));
                         ui.add_space(20.0);
                         ui.label(egui::RichText::new("Select a map to load:").color(egui::Color32::LIGHT_GRAY));
-                        // FPS label inside the F1 menu
-                        ui.add_space(20.0);
-                        ui.label(egui::RichText::new(format!("FPS: {:.1}", self.fps)).color(egui::Color32::YELLOW));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("Close (F1)").clicked() {
-                                self.world_chooser.visible = false;
-                                *mouse_locked = true;
-                                // Do not reset is_free_cam or player_mode here, preserve toggle state
-                            }
-                        });
                     });
 
-                    // Player mode controls (Free Camera toggle)
+                    // Settings toggles
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Player Mode:").color(egui::Color32::LIGHT_GRAY));
                         let prev = self.is_free_cam;
                         if ui.checkbox(&mut self.is_free_cam, "Free Camera").changed() {
                             if self.is_free_cam != prev {
+                                if self.is_free_cam && self.freeze_culling {
+                                    // Entering free cam with freeze culling: save player camera
+                                    self.saved_player_camera = Some(self.camera.clone());
+                                } else if !self.is_free_cam && self.freeze_culling {
+                                    // Leaving free cam with freeze culling: restore player camera
+                                    if let Some(saved) = self.saved_player_camera.take() {
+                                        self.camera = saved;
+                                    }
+                                }
+                                // Without freeze culling, camera stays as-is (shared position)
                                 self.player_mode = if self.is_free_cam { collision::PlayerMode::Flying } else { collision::PlayerMode::Walk };
-                                if !self.is_free_cam { self.z_vel = 0.0; }
+                                if !self.is_free_cam {
+                                    self.z_vel = 0.0;
+                                    // Snap to ground so we don't free-fall from mid-air
+                                    let gz = self.height_provider.ground_height(
+                                        self.camera.position.x,
+                                        self.camera.position.y,
+                                        Some(self.camera.position.z),
+                                    );
+                                    let min_z = gz + 0.5;
+                                    if self.camera.position.z < min_z {
+                                        self.camera.position.z = min_z;
+                                    }
+                                    self.on_ground = true;
+                                }
+                            }
+                        }
+                        ui.add_space(20.0);
+                        ui.checkbox(&mut self.show_fps, "Show FPS");
+                        ui.add_space(20.0);
+                        let prev_vsync = self.vsync;
+                        ui.checkbox(&mut self.vsync, "VSync");
+                        if self.vsync != prev_vsync {
+                            self.data.vsync = self.vsync;
+                            self.resized = true; // trigger swapchain recreation
+                        }
+                        ui.add_space(20.0);
+                        let prev_freeze = self.freeze_culling;
+                        if ui.checkbox(&mut self.freeze_culling, "Freeze Culling").changed() {
+                            if self.freeze_culling && self.is_free_cam {
+                                // Just turned freeze on while in free cam: save current camera as player
+                                self.saved_player_camera = Some(self.camera.clone());
+                            } else if !self.freeze_culling {
+                                // Turned freeze off: discard saved camera
+                                self.saved_player_camera = None;
                             }
                         }
                     });
@@ -1108,6 +1340,13 @@ impl App {
         
         // Update current world
         self.current_world = world_path.to_string();
+
+        // Rebuild occlusion culling AABBs for the new world
+        {
+            let positions: Vec<[f32; 3]> = self.data.vertices.iter().map(|v| [v.pos.x, v.pos.y, v.pos.z]).collect();
+            let groups: Vec<(u32, u32)> = self.data.draw_groups.iter().map(|g| (g.first_index, g.index_count)).collect();
+            self.occlusion_culler.build_from_groups(&positions, &self.data.indices, &groups);
+        }
 
         info!("World loaded successfully: {}", world_path);
         Ok(())
@@ -1262,6 +1501,88 @@ struct DrawGroup {
     vertex_offset: i32,
 }
 
+/// Spatially subdivide draw groups into smaller cells for tighter frustum culling.
+///
+/// Each original draw group (per-texture) may span a large area. This function
+/// bins each triangle into a 3D grid cell based on its centroid, then creates
+/// a new sub-group per non-empty cell. The index buffer is rearranged so each
+/// sub-group's indices are contiguous.
+fn subdivide_draw_groups(
+    vertices: &[Vertex],
+    indices: &mut Vec<u32>,
+    draw_groups: &mut Vec<DrawGroup>,
+    cell_size: f32,
+) {
+    let mut new_indices: Vec<u32> = Vec::with_capacity(indices.len());
+    let mut new_groups: Vec<DrawGroup> = Vec::new();
+
+    for group in draw_groups.iter() {
+        let start = group.first_index as usize;
+        let end = (start + group.index_count as usize).min(indices.len());
+        let group_indices = &indices[start..end];
+
+        // If the group is very small, keep it as-is
+        if group.index_count <= 36 {
+            let first_index = new_indices.len() as u32;
+            new_indices.extend_from_slice(group_indices);
+            new_groups.push(DrawGroup {
+                texture_index: group.texture_index,
+                first_index,
+                index_count: group.index_count,
+                vertex_offset: 0,
+            });
+            continue;
+        }
+
+        // Bin triangles into grid cells by centroid
+        let mut cells: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
+
+        for tri in group_indices.chunks(3) {
+            if tri.len() < 3 {
+                continue;
+            }
+            let v0 = vertices[tri[0] as usize].pos;
+            let v1 = vertices[tri[1] as usize].pos;
+            let v2 = vertices[tri[2] as usize].pos;
+            let cx = (v0.x + v1.x + v2.x) / 3.0;
+            let cy = (v0.y + v1.y + v2.y) / 3.0;
+            let cz = (v0.z + v1.z + v2.z) / 3.0;
+
+            let cell_x = (cx / cell_size).floor() as i32;
+            let cell_y = (cy / cell_size).floor() as i32;
+            let cell_z = (cz / cell_size).floor() as i32;
+
+            cells
+                .entry((cell_x, cell_y, cell_z))
+                .or_default()
+                .extend_from_slice(tri);
+        }
+
+        // Create a sub-group for each non-empty cell
+        for (_cell_key, cell_indices) in &cells {
+            let first_index = new_indices.len() as u32;
+            let index_count = cell_indices.len() as u32;
+            new_indices.extend_from_slice(cell_indices);
+            new_groups.push(DrawGroup {
+                texture_index: group.texture_index,
+                first_index,
+                index_count,
+                vertex_offset: 0,
+            });
+        }
+    }
+
+    let old_group_count = draw_groups.len();
+    *indices = new_indices;
+    *draw_groups = new_groups;
+    println!(
+        "  Spatial subdivision: {} groups -> {} sub-groups (cell_size={:.0})",
+        old_group_count,
+        draw_groups.len(),
+        cell_size
+    );
+}
+
 /// The Vulkan handles and associated properties used by our Vulkan app.
 #[derive(Clone, Debug, Default)]
 struct AppData {
@@ -1269,6 +1590,8 @@ struct AppData {
     messenger: vk::DebugUtilsMessengerEXT,
     // Surface
     surface: vk::SurfaceKHR,
+    // Vsync
+    vsync: bool,
     // Physical Device / Logical Device
     physical_device: vk::PhysicalDevice,
     msaa_samples: vk::SampleCountFlags,
@@ -1596,7 +1919,7 @@ unsafe fn create_swapchain(window: &Window, instance: &Instance, device: &Device
     let support = SwapchainSupport::get(instance, data, data.physical_device)?;
 
     let surface_format = get_swapchain_surface_format(&support.formats);
-    let present_mode = get_swapchain_present_mode(&support.present_modes);
+    let present_mode = get_swapchain_present_mode(&support.present_modes, data.vsync);
     let extent = get_swapchain_extent(window, support.capabilities);
 
     data.swapchain_format = surface_format.format;
@@ -1652,7 +1975,16 @@ fn get_swapchain_surface_format(formats: &[vk::SurfaceFormatKHR]) -> vk::Surface
         .unwrap_or_else(|| formats[0])
 }
 
-fn get_swapchain_present_mode(present_modes: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
+fn get_swapchain_present_mode(present_modes: &[vk::PresentModeKHR], vsync: bool) -> vk::PresentModeKHR {
+    if !vsync {
+        // Unlocked FPS: prefer IMMEDIATE (no vsync), fall back to MAILBOX
+        if present_modes.contains(&vk::PresentModeKHR::IMMEDIATE) {
+            return vk::PresentModeKHR::IMMEDIATE;
+        }
+        if present_modes.contains(&vk::PresentModeKHR::MAILBOX) {
+            return vk::PresentModeKHR::MAILBOX;
+        }
+    }
     present_modes
         .iter()
         .cloned()
@@ -2742,6 +3074,9 @@ fn load_dat_model<P: AsRef<std::path::Path>>(
     for (i, name) in texture_names.iter().enumerate() {
         println!("    [{}] {}", i, name);
     }
+
+    // Spatially subdivide draw groups for tighter frustum culling
+    subdivide_draw_groups(&data.vertices.clone(), &mut data.indices, &mut data.draw_groups, 16.0);
     
     // Store texture names and dimensions for later loading
     for name in &texture_names {

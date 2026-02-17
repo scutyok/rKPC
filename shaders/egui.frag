@@ -9,10 +9,6 @@ layout(set = 0, binding = 0) uniform sampler2D font_texture;
 
 void main() {
     vec4 tex_color = texture(font_texture, frag_uv);
-    vec4 color = frag_color * tex_color;
-    // If the texture is fully transparent, discard the fragment
-    if (tex_color.a < 0.01) {
-        discard;
-    }
-    out_color = color;
+    // Multiply vertex color by texture (font atlas provides alpha coverage)
+    out_color = frag_color * tex_color;
 }

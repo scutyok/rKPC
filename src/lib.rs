@@ -15,3 +15,6 @@ pub mod egui_renderer;
 
 #[path = "kiss_engine/collision/collision.rs"]
 pub mod collision;
+
+#[path = "kiss_engine/rendering/occlusion_culling.rs"]
+pub mod occlusion_culling;

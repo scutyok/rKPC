@@ -445,6 +445,61 @@ impl EguiRenderer {
         Ok(())
     }
 
+    /// Replace the GPU font texture with new full image data.
+    /// Call this whenever egui's font atlas changes (indicated by textures_delta).
+    pub unsafe fn replace_font_texture(
+        &mut self,
+        instance: &Instance,
+        device: &Device,
+        physical_device: vk::PhysicalDevice,
+        command_pool: vk::CommandPool,
+        graphics_queue: vk::Queue,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        device.device_wait_idle()?;
+
+        // Destroy old texture
+        device.destroy_image_view(self.font_view, None);
+        device.free_memory(self.font_memory, None);
+        device.destroy_image(self.font_image, None);
+
+        // Create new texture
+        let (new_image, new_memory, new_view) = create_texture(
+            instance,
+            device,
+            physical_device,
+            command_pool,
+            graphics_queue,
+            pixels,
+            width,
+            height,
+        )?;
+
+        self.font_image = new_image;
+        self.font_memory = new_memory;
+        self.font_view = new_view;
+
+        // Update descriptor set to point to new texture
+        let image_info = vk::DescriptorImageInfo::builder()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(self.font_view)
+            .sampler(self.font_sampler);
+
+        let image_infos = &[image_info];
+        let descriptor_write = vk::WriteDescriptorSet::builder()
+            .dst_set(self.descriptor_set)
+            .dst_binding(0)
+            .dst_array_element(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(image_infos);
+
+        device.update_descriptor_sets(&[descriptor_write], &[] as &[vk::CopyDescriptorSet]);
+
+        Ok(())
+    }
+
     /// Cleanup resources
     pub unsafe fn destroy(&mut self, device: &Device) {
         for fb in &self.framebuffers {
