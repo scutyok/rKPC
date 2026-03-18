@@ -14,6 +14,7 @@ use rustKPC::dtx;
 use rustKPC::egui_renderer;
 use rustKPC::collision;
 use rustKPC::occlusion_culling;
+use rustKPC::lights;
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::CStr;
@@ -422,6 +423,7 @@ fn main() -> Result<()> {
                 
                 WindowEvent::CloseRequested => {
                     elwt.exit();
+                    unsafe { app.device.device_wait_idle().unwrap(); }
                     unsafe { egui_renderer.destroy(&app.device); }
                     unsafe { app.destroy(); }
                 }
@@ -513,6 +515,8 @@ struct App {
     player_fov: f32,
     fps: f32,
     occlusion_culler: occlusion_culling::OcclusionCuller,
+    // Lighting
+    world_lights: Vec<lights::Light>,
 }
 
 impl App {
@@ -537,7 +541,7 @@ impl App {
         
         // Load DAT model - this populates texture names, vertices, indices, and draw groups
         // Texture dimensions are looked up during loading for UV scaling
-        load_dat_model(&mut data, "REZ/WORLDS/REALM1/R1M1A.DAT", 0, 0.01)?;
+        let initial_lights = load_dat_model(&mut data, "REZ/WORLDS/REALM1/R1M1A.DAT", 0, 0.01)?;
         
         // Now load textures to GPU (uses level_textures names populated by load_dat_model)
         create_texture_image(&instance, &device, &mut data)?;
@@ -600,6 +604,7 @@ impl App {
             fps: 0.0,
             on_ground: false,
             occlusion_culler: initial_occlusion_culler,
+            world_lights: initial_lights,
         })
     }
 
@@ -1307,7 +1312,7 @@ impl App {
         self.data.draw_groups.clear();
 
         // Load new world
-        load_dat_model(&mut self.data, world_path, 0, 0.01)?;
+        self.world_lights = load_dat_model(&mut self.data, world_path, 0, 0.01)?;
 
         // Install mesh-backed height provider from loaded model
         if !self.data.vertices.is_empty() && !self.data.indices.is_empty() {
@@ -1395,6 +1400,33 @@ impl App {
 
         self.device.unmap_memory(self.data.uniform_buffers_memory[image_index]);
 
+        // Upload lighting UBO
+        {
+            let cam_pos = self.camera.position;
+            let mut light_ubo = LightingUBO::default();
+            light_ubo.camera_pos = [cam_pos.x, cam_pos.y, cam_pos.z, 0.0];
+
+            let count = self.world_lights.len().min(MAX_LIGHTS);
+            light_ubo.light_count = count as u32;
+            light_ubo.ambient = [0.4, 0.4, 0.4, 0.0];
+
+            for (i, l) in self.world_lights.iter().take(count).enumerate() {
+                light_ubo.lights[i] = GpuLight {
+                    position_radius: [l.position[0], l.position[1], l.position[2], l.radius],
+                    color_intensity: [l.color[0], l.color[1], l.color[2], l.intensity],
+                };
+            }
+
+            let mem = self.device.map_memory(
+                self.data.light_uniform_buffers_memory[image_index],
+                0,
+                size_of::<LightingUBO>() as u64,
+                vk::MemoryMapFlags::empty(),
+            )?;
+            memcpy(&light_ubo, mem.cast(), 1);
+            self.device.unmap_memory(self.data.light_uniform_buffers_memory[image_index]);
+        }
+
         Ok(())
     }
 
@@ -1434,6 +1466,14 @@ impl App {
 
         self.destroy_swapchain();
 
+        // Destroy level textures
+        for texture in &self.data.level_textures {
+            self.device.destroy_image_view(texture.view, None);
+            self.device.free_memory(texture.memory, None);
+            self.device.destroy_image(texture.image, None);
+        }
+        self.data.level_textures.clear();
+
         self.data.in_flight_fences.iter().for_each(|f| self.device.destroy_fence(*f, None));
         self.data.render_finished_semaphores.iter().for_each(|s| self.device.destroy_semaphore(*s, None));
         self.data.image_available_semaphores.iter().for_each(|s| self.device.destroy_semaphore(*s, None));
@@ -1464,6 +1504,8 @@ impl App {
         self.device.destroy_descriptor_pool(self.data.descriptor_pool, None);
         self.data.uniform_buffers_memory.iter().for_each(|m| self.device.free_memory(*m, None));
         self.data.uniform_buffers.iter().for_each(|b| self.device.destroy_buffer(*b, None));
+        self.data.light_uniform_buffers_memory.iter().for_each(|m| self.device.free_memory(*m, None));
+        self.data.light_uniform_buffers.iter().for_each(|b| self.device.destroy_buffer(*b, None));
         self.device.destroy_image_view(self.data.depth_image_view, None);
         self.device.free_memory(self.data.depth_image_memory, None);
         self.device.destroy_image(self.data.depth_image, None);
@@ -1647,6 +1689,9 @@ struct AppData {
     debug_line_pipeline_layout: vk::PipelineLayout,
     uniform_buffers: Vec<vk::Buffer>,
     uniform_buffers_memory: Vec<vk::DeviceMemory>,
+    // Lighting UBO (binding 2)
+    light_uniform_buffers: Vec<vk::Buffer>,
+    light_uniform_buffers_memory: Vec<vk::DeviceMemory>,
     // Descriptors
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
@@ -2117,7 +2162,13 @@ unsafe fn create_descriptor_set_layout(device: &Device, data: &mut AppData) -> R
         .descriptor_count(1)
         .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
-    let bindings = &[ubo_binding, sampler_binding];
+    let light_ubo_binding = vk::DescriptorSetLayoutBinding::builder()
+        .binding(2)
+        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+        .descriptor_count(1)
+        .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+    let bindings = &[ubo_binding, sampler_binding, light_ubo_binding];
     let info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
 
     data.descriptor_set_layout = device.create_descriptor_set_layout(&info, None)?;
@@ -2927,6 +2978,15 @@ fn load_model(data: &mut AppData) -> Result<()> {
                     model.mesh.texcoords[tex_coord_offset],
                     1.0 - model.mesh.texcoords[tex_coord_offset + 1],
                 ),
+                normal: if !model.mesh.normals.is_empty() {
+                    vec3(
+                        model.mesh.normals[pos_offset],
+                        model.mesh.normals[pos_offset + 1],
+                        model.mesh.normals[pos_offset + 2],
+                    )
+                } else {
+                    vec3(0.0, 0.0, 1.0)
+                },
             };
 
             if let Some(index) = unique_vertices.get(&vertex) {
@@ -2951,13 +3011,13 @@ fn load_model(data: &mut AppData) -> Result<()> {
 /// * `scale` - Scale factor for the world geometry (Lithtech units are large)
 /// 
 /// # Returns
-/// Tuple of (vertices, indices) ready for Vulkan rendering
+/// Vec of extracted lights from the DAT world objects
 fn load_dat_model<P: AsRef<std::path::Path>>(
     data: &mut AppData,
     path: P,
     world_model_index: usize,
     scale: f32,
-) -> Result<()> {
+) -> Result<Vec<lights::Light>> {
     use crate::dat::DatFile;
     use crate::dat_mesh::MeshExtractor;
 
@@ -3038,6 +3098,14 @@ fn load_dat_model<P: AsRef<std::path::Path>>(
         
         // Add vertices for this group, scaling UVs by texture dimensions
         for dat_vert in &textured_mesh.vertices {
+            // Normal: dat_mesh stores plane normals in Lithtech space;
+            // the position is already swapped (Y↔Z) in dat_mesh, but the
+            // normal is NOT swapped there, so apply the same swap here.
+            let normal = vec3(
+                dat_vert.normal[0],
+                dat_vert.normal[2], // Lithtech Z → Vulkan Y
+                dat_vert.normal[1], // Lithtech Y → Vulkan Z
+            );
             let vertex = Vertex {
                 pos: vec3(dat_vert.pos[0], dat_vert.pos[1], dat_vert.pos[2]),
                 color: vec3(dat_vert.color[0], dat_vert.color[1], dat_vert.color[2]),
@@ -3046,6 +3114,7 @@ fn load_dat_model<P: AsRef<std::path::Path>>(
                     dat_vert.tex_coord[0] / tex_width as f32,
                     dat_vert.tex_coord[1] / tex_height as f32,
                 ),
+                normal,
             };
             data.vertices.push(vertex);
         }
@@ -3125,7 +3194,25 @@ fn load_dat_model<P: AsRef<std::path::Path>>(
         data.draw_groups.len()
     );
 
-    Ok(())
+    // Extract lights from world objects
+    let world_lights = lights::extract_lights_from_objects(&dat_file.objects, scale);
+
+    // Debug: print all unique object types found in the DAT
+    {
+        let mut types: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for obj in &dat_file.objects {
+            types.insert(&obj.type_name);
+        }
+        let mut sorted: Vec<&str> = types.into_iter().collect();
+        sorted.sort();
+        println!("=== DAT OBJECT TYPES ({} unique) ===", sorted.len());
+        for t in &sorted {
+            println!("  {}", t);
+        }
+        println!("  Lights found: {}", world_lights.len());
+    }
+
+    Ok(world_lights)
 }
 
 /// Print summary information about a DAT file without loading mesh data
@@ -3310,6 +3397,23 @@ unsafe fn create_uniform_buffers(instance: &Instance, device: &Device, data: &mu
         data.uniform_buffers_memory.push(uniform_buffer_memory);
     }
 
+    // Create light UBO buffers (one per swapchain image)
+    data.light_uniform_buffers.clear();
+    data.light_uniform_buffers_memory.clear();
+
+    for _ in 0..data.swapchain_images.len() {
+        let (buf, mem) = create_buffer(
+            instance,
+            device,
+            data,
+            size_of::<LightingUBO>() as u64,
+            vk::BufferUsageFlags::UNIFORM_BUFFER,
+            vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
+        )?;
+        data.light_uniform_buffers.push(buf);
+        data.light_uniform_buffers_memory.push(mem);
+    }
+
     Ok(())
 }
 
@@ -3324,9 +3428,10 @@ unsafe fn create_descriptor_pool(device: &Device, data: &mut AppData) -> Result<
     let num_textures = data.level_textures.len().max(1);
     let total_sets = data.swapchain_images.len() * (1 + num_textures);
     
+    // Each set now has 2 UBO bindings (view/proj + lighting) + 1 sampler
     let ubo_size = vk::DescriptorPoolSize::builder()
         .type_(vk::DescriptorType::UNIFORM_BUFFER)
-        .descriptor_count(total_sets as u32);
+        .descriptor_count(total_sets as u32 * 2);
 
     let sampler_size = vk::DescriptorPoolSize::builder()
         .type_(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
@@ -3381,7 +3486,20 @@ unsafe fn create_descriptor_sets(device: &Device, data: &mut AppData) -> Result<
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .image_info(image_info);
 
-        device.update_descriptor_sets(&[ubo_write, sampler_write], &[] as &[vk::CopyDescriptorSet]);
+        let light_buf_info = vk::DescriptorBufferInfo::builder()
+            .buffer(data.light_uniform_buffers[i])
+            .offset(0)
+            .range(size_of::<LightingUBO>() as u64);
+
+        let light_buffer_info = &[light_buf_info];
+        let light_ubo_write = vk::WriteDescriptorSet::builder()
+            .dst_set(data.descriptor_sets[i])
+            .dst_binding(2)
+            .dst_array_element(0)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+            .buffer_info(light_buffer_info);
+
+        device.update_descriptor_sets(&[ubo_write, sampler_write, light_ubo_write], &[] as &[vk::CopyDescriptorSet]);
     }
 
     // Allocate and update descriptor sets for each level texture
@@ -3422,7 +3540,20 @@ unsafe fn create_descriptor_sets(device: &Device, data: &mut AppData) -> Result<
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(image_info);
 
-            device.update_descriptor_sets(&[ubo_write, sampler_write], &[] as &[vk::CopyDescriptorSet]);
+            let light_buf_info_data = vk::DescriptorBufferInfo::builder()
+                .buffer(data.light_uniform_buffers[i])
+                .offset(0)
+                .range(size_of::<LightingUBO>() as u64);
+
+            let light_buffer_info = &[light_buf_info_data];
+            let light_ubo_write = vk::WriteDescriptorSet::builder()
+                .dst_set(tex_descriptor_sets[i])
+                .dst_binding(2)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(light_buffer_info);
+
+            device.update_descriptor_sets(&[ubo_write, sampler_write, light_ubo_write], &[] as &[vk::CopyDescriptorSet]);
         }
         
         // Store the descriptor sets
@@ -3534,17 +3665,52 @@ struct UniformBufferObject {
     proj: Mat4,
 }
 
+/// Maximum number of point lights supported in a single frame.
+const MAX_LIGHTS: usize = 128;
+
+/// GPU-side point light (matches GLSL PointLight).
+#[repr(C, align(16))]
+#[derive(Copy, Clone, Debug)]
+struct GpuLight {
+    position_radius: [f32; 4], // xyz = position, w = radius
+    color_intensity: [f32; 4], // rgb = color,    w = intensity
+}
+
+/// Lighting uniform buffer (binding 2, fragment stage).
+#[repr(C, align(16))]
+#[derive(Clone)]
+struct LightingUBO {
+    camera_pos: [f32; 4],              // xyz + padding
+    ambient: [f32; 4],                 // rgb + padding
+    light_count: u32,
+    _pad: [u32; 3],
+    lights: [GpuLight; MAX_LIGHTS],
+}
+
+impl Default for LightingUBO {
+    fn default() -> Self {
+        Self {
+            camera_pos: [0.0; 4],
+            ambient: [0.4, 0.4, 0.4, 0.0],
+            light_count: 0,
+            _pad: [0; 3],
+            lights: [GpuLight { position_radius: [0.0; 4], color_intensity: [0.0; 4] }; MAX_LIGHTS],
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 struct Vertex {
     pos: Vec3,
     color: Vec3,
     tex_coord: Vec2,
+    normal: Vec3,
 }
 
 impl Vertex {
-    fn new(pos: Vec3, color: Vec3, tex_coord: Vec2) -> Self {
-        Self { pos, color, tex_coord }
+    fn new(pos: Vec3, color: Vec3, tex_coord: Vec2, normal: Vec3) -> Self {
+        Self { pos, color, tex_coord, normal }
     }
 
     fn binding_description() -> vk::VertexInputBindingDescription {
@@ -3555,7 +3721,7 @@ impl Vertex {
             .build()
     }
 
-    fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {
+    fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 4] {
         let pos = vk::VertexInputAttributeDescription::builder()
             .binding(0)
             .location(0)
@@ -3574,13 +3740,19 @@ impl Vertex {
             .format(vk::Format::R32G32_SFLOAT)
             .offset((size_of::<Vec3>() + size_of::<Vec3>()) as u32)
             .build();
-        [pos, color, tex_coord]
+        let normal = vk::VertexInputAttributeDescription::builder()
+            .binding(0)
+            .location(3)
+            .format(vk::Format::R32G32B32_SFLOAT)
+            .offset((size_of::<Vec3>() + size_of::<Vec3>() + size_of::<Vec2>()) as u32)
+            .build();
+        [pos, color, tex_coord, normal]
     }
 }
 
 impl PartialEq for Vertex {
     fn eq(&self, other: &Self) -> bool {
-        self.pos == other.pos && self.color == other.color && self.tex_coord == other.tex_coord
+        self.pos == other.pos && self.color == other.color && self.tex_coord == other.tex_coord && self.normal == other.normal
     }
 }
 
@@ -3596,6 +3768,9 @@ impl Hash for Vertex {
         self.color[2].to_bits().hash(state);
         self.tex_coord[0].to_bits().hash(state);
         self.tex_coord[1].to_bits().hash(state);
+        self.normal[0].to_bits().hash(state);
+        self.normal[1].to_bits().hash(state);
+        self.normal[2].to_bits().hash(state);
     }
 }
 

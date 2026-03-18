@@ -18,3 +18,6 @@ pub mod collision;
 
 #[path = "kiss_engine/rendering/occlusion_culling.rs"]
 pub mod occlusion_culling;
+
+#[path = "kiss_engine/rendering/lights.rs"]
+pub mod lights;
