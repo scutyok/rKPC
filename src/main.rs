@@ -964,30 +964,8 @@ impl App {
         // apply wall collisions (horizontal) then ground collision when in walk mode
         if self.player_mode == collision::PlayerMode::Walk {
             if let Some(mesh) = &self.mesh_provider {
-                let before = self.camera.position;
-                // only pass 3 arguments: prev_pos, &mut self.camera.position, 0.25 (width)
+                // Cylinder collision + stair stepping (matching CollideWithWorld from collision.cpp)
                 mesh.resolve_player_movement(prev_pos, &mut self.camera.position, 0.25);
-                let horiz_blocked = (before.x != self.camera.position.x || before.y != self.camera.position.y)
-                    && (self.camera.position.x == prev_pos.x && self.camera.position.y == prev_pos.y);
-                if horiz_blocked {
-                    let step_height = 0.9;
-                    // try intended horizontal move at elevated Z to step over obstacle
-                    let mut try_pos = before;
-                    try_pos.z = prev_pos.z + step_height;
-                    let mut elevated_prev = prev_pos;
-                    elevated_prev.z += step_height;
-                    let mut stepped_pos = try_pos;
-                    mesh.resolve_player_movement(elevated_prev, &mut stepped_pos, 0.25);
-                    let ground_z = self.height_provider.ground_height(stepped_pos.x, stepped_pos.y, Some(stepped_pos.z));
-                    let min_z = ground_z + 0.5;
-                    let dz = min_z - prev_pos.z;
-                    if (stepped_pos.x != prev_pos.x || stepped_pos.y != prev_pos.y)
-                        && dz > 0.0 && dz <= step_height + 0.1
-                    {
-                        self.camera.position = stepped_pos;
-                        self.camera.position.z = min_z;
-                    }
-                }
             }
             let _before_z = self.camera.position.z;
             collision::resolve_player_collision(&mut self.camera.position, self.height_provider.as_ref(), 0.25, 0.5);
