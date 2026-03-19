@@ -6,9 +6,9 @@
 
 <ol>
   <li>Open project folder in VSC (or any IDE of your liking)</li>
-  <li>Compile with "cargo run"</li>
+  <li>Compile with "cargo run --bin rustKPC"</li>
   <li>Wait until all the textures loads</li>
-  <li>You can now see the map</li>
+  <li>You can now fully see the map and move</li>
 </ol>
 
 <h2>Keybinds</h2>
