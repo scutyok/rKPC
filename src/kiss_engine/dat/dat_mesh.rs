@@ -364,10 +364,12 @@ impl<'a> MeshExtractor<'a> {
     /// Calculate UV coordinates for a vertex position
     fn calculate_uv(&self, pos: &Vector3, surface: &WorldSurface) -> Vector2 {
         // Lithtech texture mapping:
-        // U = pos dot P + O.x
-        // V = pos dot Q + O.y
-        let u = pos.dot(&surface.uv_p) + surface.uv_o.x;
-        let v = pos.dot(&surface.uv_q) + surface.uv_o.y;
+        // O is a world-space origin point (where UV = 0,0)
+        // U = (pos - O) dot P
+        // V = (pos - O) dot Q
+        let delta = pos.sub(&surface.uv_o);
+        let u = delta.dot(&surface.uv_p);
+        let v = delta.dot(&surface.uv_q);
         Vector2::new(u, v)
     }
 

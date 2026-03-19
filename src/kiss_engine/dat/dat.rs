@@ -183,8 +183,9 @@ pub struct WorldSurface {
 impl WorldSurface {
     /// Calculate UV coordinates for a vertex position
     pub fn calculate_uv(&self, pos: &Vector3) -> Vector2 {
-        let u = pos.dot(&self.uv_p) + self.uv_o.x;
-        let v = pos.dot(&self.uv_q) + self.uv_o.y;
+        let delta = pos.sub(&self.uv_o);
+        let u = delta.dot(&self.uv_p);
+        let v = delta.dot(&self.uv_q);
         Vector2::new(u, v)
     }
 }

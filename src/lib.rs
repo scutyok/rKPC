@@ -21,3 +21,6 @@ pub mod occlusion_culling;
 
 #[path = "kiss_engine/rendering/lights.rs"]
 pub mod lights;
+
+#[path = "kiss_engine/abc/abc.rs"]
+pub mod abc;

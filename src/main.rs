@@ -15,6 +15,7 @@ use rustKPC::egui_renderer;
 use rustKPC::collision;
 use rustKPC::occlusion_culling;
 use rustKPC::lights;
+use rustKPC::abc;
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::CStr;
@@ -281,7 +282,7 @@ fn main() -> Result<()> {
     let mut mouse_locked = true;
     
     // Set initial title after load
-    window.set_title("KISS Psycho Circus: The Nightmare Child [F1: World Select]");
+    window.set_title("KISS Psycho Circus: The Nightmare Child [F1: Debug Menu]");
     
     event_loop.run(move |event, elwt| {
         // Let egui handle events when UI is visible
@@ -2649,6 +2650,26 @@ unsafe fn create_texture_image(instance: &Instance, device: &Device, data: &mut 
                     }
                 }
             }
+
+            // Fallback: try the texture name as a direct file path (for skins etc.)
+            if found_tex.is_none() {
+                let direct = std::path::Path::new(&texture_name);
+                if direct.exists() {
+                    if let Ok(tex) = load_dtx_texture(direct) {
+                        found_tex = Some(tex);
+                    }
+                }
+                // Also try searching under REZ/SKINS
+                if found_tex.is_none() {
+                    let skins_path = std::path::Path::new("REZ/SKINS");
+                    let skin_name = texture_name.split(['\\', '/']).last().unwrap_or(&texture_name);
+                    if let Some(dtx_path) = find_texture_file(skins_path, skin_name) {
+                        if let Ok(tex) = load_dtx_texture(&dtx_path) {
+                            found_tex = Some(tex);
+                        }
+                    }
+                }
+            }
             
             if let Some(tex) = found_tex {
                 loaded_count += 1;
@@ -3142,6 +3163,73 @@ fn load_dat_model<P: AsRef<std::path::Path>>(
     println!("  Unique textures: {}", texture_names.len());
     for (i, name) in texture_names.iter().enumerate() {
         println!("    [{}] {}", i, name);
+    }
+
+    // ── ABC model objects (barrels, decos, pickups, etc.) ─────────
+    {
+        let abc_objects = abc::extract_abc_objects(&dat_file.objects, "REZ", scale);
+        println!("=== ABC OBJECTS: {} found ===", abc_objects.len());
+
+        // Summary by type
+        let mut type_counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for obj in &abc_objects {
+            *type_counts.entry(&obj.type_name).or_insert(0) += 1;
+        }
+        for (tn, count) in &type_counts {
+            println!("  {}: {}", tn, count);
+        }
+
+        for abc_obj in &abc_objects {
+            // Register skin texture
+            let skin_name = abc_obj.skin_filename.clone();
+            let tex_index = if let Some(&idx) = texture_name_to_index.get(&skin_name) {
+                idx
+            } else {
+                let idx = texture_names.len();
+                texture_names.push(skin_name.clone());
+                texture_name_to_index.insert(skin_name.clone(), idx);
+                idx
+            };
+
+            // Read skin DTX dimensions (for LevelTexture metadata)
+            if !texture_dimensions.contains_key(&skin_name) {
+                let dims = if std::path::Path::new(&abc_obj.skin_filename).exists() {
+                    match crate::dtx::DtxFile::read_from_file(&abc_obj.skin_filename) {
+                        Ok(dtx) => (dtx.width as u32, dtx.height as u32),
+                        Err(_) => (256, 256),
+                    }
+                } else {
+                    (256, 256)
+                };
+                texture_dimensions.insert(skin_name, dims);
+            }
+
+            let vert_base = data.vertices.len() as u32;
+            let idx_base = data.indices.len() as u32;
+
+            // Append vertices — ABC UVs are already in 0..1 range
+            for v in &abc_obj.mesh.vertices {
+                data.vertices.push(Vertex {
+                    pos: vec3(v.pos[0], v.pos[1], v.pos[2]),
+                    color: vec3(1.0, 1.0, 1.0),
+                    tex_coord: vec2(v.tex_coord[0], v.tex_coord[1]),
+                    normal: vec3(v.normal[0], v.normal[1], v.normal[2]),
+                });
+            }
+
+            // Append indices (offset by vertex base)
+            for &i in &abc_obj.mesh.indices {
+                data.indices.push(vert_base + i);
+            }
+
+            // Create draw group
+            data.draw_groups.push(DrawGroup {
+                texture_index: tex_index,
+                first_index: idx_base,
+                index_count: abc_obj.mesh.indices.len() as u32,
+                vertex_offset: 0,
+            });
+        }
     }
 
     // Spatially subdivide draw groups for tighter frustum culling
