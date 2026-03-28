@@ -11,8 +11,8 @@ layout(binding = 1) uniform sampler2D texSampler;
 
 // Point light structure (matches Rust GpuLight)
 struct PointLight {
-    vec4 positionRadius;  // xyz = position, w = radius
-    vec4 colorIntensity;  // rgb = color,    w = intensity
+    vec4 positionRadiusSq;  // xyz = position, w = radius²
+    vec4 colorIntensity;    // rgb = color * intensity (pre-multiplied), w = invRadius
 };
 
 // Lighting UBO
@@ -37,9 +37,8 @@ layout(location = 0) out vec4 outColor;
 void main() {
     vec4 texColor = texture(texSampler, fragTexCoord);
 
-    // Guard against zero-length normals (would produce NaN and make everything black)
-    float nLen = length(fragNormal);
-    vec3 N = nLen > 0.001 ? fragNormal / nLen : vec3(0.0, 0.0, 1.0);
+    // Normal is already normalized from vertex shader
+    vec3 N = fragNormal;
 
     // Ambient base
     vec3 totalLight = lighting.ambient.rgb;
@@ -47,26 +46,31 @@ void main() {
     // Accumulate point light contributions
     uint count = min(lighting.lightCount, 128u);
     for (uint i = 0u; i < count; i++) {
-        vec3  lightPos   = lighting.lights[i].positionRadius.xyz;
-        float lightRad   = lighting.lights[i].positionRadius.w;
-        vec3  lightCol   = lighting.lights[i].colorIntensity.rgb;
-        float lightInt   = lighting.lights[i].colorIntensity.w;
+        vec3  lightPos   = lighting.lights[i].positionRadiusSq.xyz;
+        float radiusSq   = lighting.lights[i].positionRadiusSq.w;
+        vec3  lightColI  = lighting.lights[i].colorIntensity.rgb; // pre-multiplied color*intensity
+        float invRadius  = lighting.lights[i].colorIntensity.w;
 
         vec3  toLight = lightPos - fragWorldPos;
-        float dist    = length(toLight);
+        float distSq  = dot(toLight, toLight);
 
-        if (dist >= lightRad) continue;
+        // Early out using squared distance (no sqrt)
+        if (distSq >= radiusSq) continue;
 
-        vec3  L = toLight / dist;
+        // inversesqrt is a single HW instruction on most GPUs
+        float invDist = inversesqrt(distSq);
 
-        // Smooth quadratic attenuation (reaches zero at radius)
-        float t = 1.0 - dist / lightRad;
+        vec3  L = toLight * invDist;
+
+        // Smooth quadratic attenuation: t = 1 - dist/radius = 1 - dist*invRadius
+        float dist = distSq * invDist;  // dist = distSq / sqrt(distSq)
+        float t = 1.0 - dist * invRadius;
         float atten = t * t;
 
         // Diffuse: two-sided so geometry with flipped normals still receives light
         float NdotL = abs(dot(N, L));
 
-        totalLight += lightCol * lightInt * NdotL * atten;
+        totalLight += lightColI * NdotL * atten;
     }
 
     outColor = vec4(texColor.rgb * totalLight, 1.0);

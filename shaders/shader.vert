@@ -29,6 +29,9 @@ void main() {
     fragColor = inColor;
     fragTexCoord = inTexCoord;
     fragWorldPos = worldPos.xyz;
-    // Transform normal by model matrix (works correctly for uniform scale / identity)
-    fragNormal = mat3(push.model) * inNormal;
+    // Transform normal by model matrix and normalize in vertex shader
+    // Guard against zero-length normals (would produce NaN)
+    vec3 n = mat3(push.model) * inNormal;
+    float nLen = length(n);
+    fragNormal = nLen > 0.001 ? n / nLen : vec3(0.0, 0.0, 1.0);
 }

@@ -7,6 +7,12 @@ pub mod dat;
 #[path = "kiss_engine/dat/dat_mesh.rs"]
 pub mod dat_mesh;
 
+#[path = "kiss_engine/dat/world_loader.rs"]
+pub mod world_loader;
+
+#[path = "kiss_engine/dat/world_chooser.rs"]
+pub mod world_chooser;
+
 #[path = "kiss_engine/dtx/dtx.rs"]
 pub mod dtx;
 
@@ -22,5 +28,14 @@ pub mod occlusion_culling;
 #[path = "kiss_engine/rendering/lights.rs"]
 pub mod lights;
 
+#[path = "kiss_engine/rendering/camera.rs"]
+pub mod camera;
+
+#[path = "kiss_engine/rendering/types.rs"]
+pub mod types;
+
 #[path = "kiss_engine/abc/abc.rs"]
 pub mod abc;
+
+#[path = "kiss_engine/vulkan/mod.rs"]
+pub mod vulkan;
