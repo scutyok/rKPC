@@ -37,6 +37,12 @@ layout(location = 0) out vec4 outColor;
 void main() {
     vec4 texColor = texture(texSampler, fragTexCoord);
 
+    // Sky mode: negative opacity = sky (no lighting), magnitude = alpha
+    if (push.opacity < 0.0) {
+        outColor = vec4(texColor.rgb, texColor.a * abs(push.opacity));
+        return;
+    }
+
     // Normal is already normalized from vertex shader
     vec3 N = fragNormal;
 

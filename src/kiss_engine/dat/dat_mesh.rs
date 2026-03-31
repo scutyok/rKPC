@@ -111,8 +111,12 @@ pub struct MeshExtractor<'a> {
     pub skip_invisible: bool,
     /// Whether to skip sky surfaces
     pub skip_sky: bool,
+    /// Whether to skip skyportal surfaces
+    pub skip_skyportal: bool,
     /// Whether to flip the winding order
     pub flip_winding: bool,
+    /// Texture name substrings to skip (case-insensitive)
+    pub skip_texture_names: Vec<String>,
 }
 
 impl<'a> MeshExtractor<'a> {
@@ -122,7 +126,9 @@ impl<'a> MeshExtractor<'a> {
             scale: 1.0,
             skip_invisible: true,
             skip_sky: false,
+            skip_skyportal: false,
             flip_winding: false,
+            skip_texture_names: Vec::new(),
         }
     }
 
@@ -144,9 +150,21 @@ impl<'a> MeshExtractor<'a> {
         self
     }
 
+    /// Set whether to skip skyportal surfaces
+    pub fn with_skip_skyportal(mut self, skip: bool) -> Self {
+        self.skip_skyportal = skip;
+        self
+    }
+
     /// Set whether to flip winding order
     pub fn with_flip_winding(mut self, flip: bool) -> Self {
         self.flip_winding = flip;
+        self
+    }
+
+    /// Add texture name substrings to skip (case-insensitive match)
+    pub fn with_skip_textures(mut self, names: Vec<String>) -> Self {
+        self.skip_texture_names = names;
         self
     }
 
@@ -208,6 +226,22 @@ impl<'a> MeshExtractor<'a> {
                     || (surface.flags & surface_flags::SKYPORTAL) != 0)
             {
                 continue;
+            }
+            if self.skip_skyportal && (surface.flags & surface_flags::SKYPORTAL) != 0 {
+                continue;
+            }
+
+            // Filter by texture name
+            if !self.skip_texture_names.is_empty() {
+                let tex_name = if (surface.texture_index as usize) < bsp.textures.len() {
+                    &bsp.textures[surface.texture_index as usize].name
+                } else {
+                    ""
+                };
+                let tex_lower = tex_name.to_lowercase();
+                if self.skip_texture_names.iter().any(|s| tex_lower.contains(s)) {
+                    continue;
+                }
             }
 
             texture_groups

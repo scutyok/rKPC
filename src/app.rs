@@ -87,7 +87,8 @@ impl App {
         vulkan::create_depth_objects(&instance, &device, &mut data)?;
         vulkan::create_framebuffers(&device, &mut data)?;
 
-        let initial_lights = load_dat_model(&mut data, "REZ/WORLDS/REALM1/R1M1A.DAT", 0, 0.01)?;
+        let loaded = load_dat_model(&mut data, "REZ/WORLDS/REALM1/R1M1A.DAT", 0, 0.01)?;
+        let initial_lights = loaded.lights;
 
         vulkan::create_texture_image(&instance, &device, &mut data)?;
         vulkan::create_texture_image_view(&device, &mut data)?;
@@ -103,11 +104,9 @@ impl App {
         let initial_world = "REZ/WORLDS/REALM1/R1M1A.DAT".to_string();
 
         let (initial_height_provider, initial_mesh_provider) =
-            if !data.vertices.is_empty() && !data.indices.is_empty() {
-                let positions = data.vertices.iter().map(|v| v.pos).collect::<Vec<_>>();
-                let indices = data.indices.clone();
+            if !loaded.collision_positions.is_empty() && !loaded.collision_indices.is_empty() {
                 let mesh =
-                    collision::MeshHeightProvider::new(positions.clone(), indices.clone());
+                    collision::MeshHeightProvider::new(loaded.collision_positions, loaded.collision_indices);
                 (
                     Box::new(mesh.clone()) as Box<dyn collision::HeightProvider>,
                     Some(mesh),
@@ -403,11 +402,10 @@ impl App {
 
         let command_buffer = command_buffers[model_index];
 
-        let model = Mat4::from_scale(1.0);
-        let model_bytes = std::slice::from_raw_parts(&model as *const Mat4 as *const u8, size_of::<Mat4>());
-
-        let opacity = 1.0f32;
-        let opacity_bytes = &opacity.to_ne_bytes()[..];
+        let sky_opacity: f32 = -0.7;
+        let sky_opacity_bytes = &sky_opacity.to_ne_bytes()[..];
+        let world_flag: f32 = 1.0;
+        let world_flag_bytes = &world_flag.to_ne_bytes()[..];
 
         let inheritance_info = vk::CommandBufferInheritanceInfo::builder()
             .render_pass(self.data.render_pass)
@@ -420,40 +418,51 @@ impl App {
 
         self.device.begin_command_buffer(command_buffer, &info)?;
 
-        self.device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.data.pipeline);
         self.device.cmd_bind_vertex_buffers(command_buffer, 0, &[self.data.vertex_buffer], &[0]);
         self.device.cmd_bind_index_buffer(command_buffer, self.data.index_buffer, 0, vk::IndexType::UINT32);
 
-        self.device.cmd_push_constants(
-            command_buffer,
-            self.data.pipeline_layout,
-            vk::ShaderStageFlags::VERTEX,
-            0,
-            model_bytes,
-        );
-        self.device.cmd_push_constants(
-            command_buffer,
-            self.data.pipeline_layout,
-            vk::ShaderStageFlags::FRAGMENT,
-            64,
-            opacity_bytes,
-        );
+        let sky_start = self.data.sky_draw_group_start;
+        let has_sky_groups = sky_start < self.data.draw_groups.len();
 
-        if self.data.draw_groups.is_empty() {
-            self.device.cmd_bind_descriptor_sets(
+        // === Pass 1: Draw sky groups with sky pipeline (no depth writes) ===
+        if has_sky_groups {
+            self.device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.data.sky_pipeline);
+
+            // Push negative opacity so the fragment shader uses sky mode (no lighting, alpha = |opacity|)
+            self.device.cmd_push_constants(
                 command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
                 self.data.pipeline_layout,
-                0,
-                &[self.data.descriptor_sets[image_index]],
-                &[],
+                vk::ShaderStageFlags::FRAGMENT,
+                64,
+                sky_opacity_bytes,
             );
-            self.device.cmd_draw_indexed(command_buffer, self.data.indices.len() as u32, 1, 0, 0, 0);
-        } else {
-            for (group_idx, group) in self.data.draw_groups.iter().enumerate() {
-                if !self.occlusion_culler.is_visible(group_idx) {
-                    continue;
-                }
+
+            // Re-center sky geometry on the camera. First subtract sky_translation
+            // to bring vertices to local origin, scale down to bring the sky closer,
+            // then translate to camera position (including walk-mode eye offset).
+            let sky_t = self.data.sky_translation;
+            let sky_scale = 0.25;
+            let eye_z = if self.player_mode == collision::PlayerMode::Walk && !self.is_free_cam {
+                self.eye_offset_walk
+            } else {
+                0.0
+            };
+            let cam_eye = self.camera.position + vec3(0.0, 0.0, eye_z);
+            let sky_model = Mat4::from_translation(cam_eye)
+                * Mat4::from_scale(sky_scale)
+                * Mat4::from_translation(-vec3(sky_t[0], sky_t[1], sky_t[2]));
+            let sky_model_bytes = std::slice::from_raw_parts(
+                &sky_model as *const Mat4 as *const u8, size_of::<Mat4>());
+            self.device.cmd_push_constants(
+                command_buffer,
+                self.data.pipeline_layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                sky_model_bytes,
+            );
+
+            for group_idx in sky_start..self.data.draw_groups.len() {
+                let group = &self.data.draw_groups[group_idx];
                 let descriptor_set = if group.texture_index < self.data.level_textures.len()
                     && !self.data.level_textures[group.texture_index].descriptor_sets.is_empty()
                 {
@@ -479,6 +488,73 @@ impl App {
                     0,
                     0
                 );
+            }
+        }
+
+        // === Pass 2: Draw world groups with normal pipeline (depth writes on) ===
+        {
+            self.device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.data.pipeline);
+
+            // Push world flag (<=1.5) so the fragment shader runs full lighting
+            self.device.cmd_push_constants(
+                command_buffer,
+                self.data.pipeline_layout,
+                vk::ShaderStageFlags::FRAGMENT,
+                64,
+                world_flag_bytes,
+            );
+
+            let model = Mat4::from_scale(1.0);
+            let model_bytes = std::slice::from_raw_parts(&model as *const Mat4 as *const u8, size_of::<Mat4>());
+            self.device.cmd_push_constants(
+                command_buffer,
+                self.data.pipeline_layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                model_bytes,
+            );
+
+            if self.data.draw_groups.is_empty() {
+                self.device.cmd_bind_descriptor_sets(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.data.pipeline_layout,
+                    0,
+                    &[self.data.descriptor_sets[image_index]],
+                    &[],
+                );
+                self.device.cmd_draw_indexed(command_buffer, self.data.indices.len() as u32, 1, 0, 0, 0);
+            } else {
+                for (group_idx, group) in self.data.draw_groups.iter().enumerate().take(sky_start) {
+                    if !self.occlusion_culler.is_visible(group_idx) {
+                        continue;
+                    }
+                    let descriptor_set = if group.texture_index < self.data.level_textures.len()
+                        && !self.data.level_textures[group.texture_index].descriptor_sets.is_empty()
+                    {
+                        self.data.level_textures[group.texture_index].descriptor_sets[image_index]
+                    } else {
+                        self.data.descriptor_sets[image_index]
+                    };
+
+                    self.device.cmd_bind_descriptor_sets(
+                        command_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        self.data.pipeline_layout,
+                        0,
+                        &[descriptor_set],
+                        &[],
+                    );
+
+                    self.device.cmd_draw_indexed(
+                        command_buffer,
+                        group.index_count,
+                        1,
+                        group.first_index,
+                        0,
+                        0
+                    );
+                }
             }
         }
 
@@ -919,15 +995,14 @@ impl App {
         self.data.draw_groups.clear();
 
         // Load new world
-        self.world_lights = load_dat_model(&mut self.data, world_path, 0, 0.01)?;
+        let loaded = load_dat_model(&mut self.data, world_path, 0, 0.01)?;
+        self.world_lights = loaded.lights;
         self.cached_light_ubo = Self::build_light_ubo(&self.world_lights);
         self.upload_light_ubo_to_all();
 
-        // Install mesh-backed height provider
-        if !self.data.vertices.is_empty() && !self.data.indices.is_empty() {
-            let positions = self.data.vertices.iter().map(|v| v.pos).collect::<Vec<_>>();
-            let indices = self.data.indices.clone();
-            let mesh = collision::MeshHeightProvider::new(positions.clone(), indices.clone());
+        // Install mesh-backed height provider (uses collision mesh which includes invisible surfaces)
+        if !loaded.collision_positions.is_empty() && !loaded.collision_indices.is_empty() {
+            let mesh = collision::MeshHeightProvider::new(loaded.collision_positions, loaded.collision_indices);
             self.height_provider = Box::new(mesh.clone());
             self.mesh_provider = Some(mesh);
         } else {
@@ -1118,6 +1193,7 @@ impl App {
         self.device.destroy_image(self.data.color_image, None);
         self.data.framebuffers.iter().for_each(|f| self.device.destroy_framebuffer(*f, None));
         self.device.destroy_pipeline(self.data.pipeline, None);
+        self.device.destroy_pipeline(self.data.sky_pipeline, None);
         self.device.destroy_pipeline_layout(self.data.pipeline_layout, None);
         self.device.destroy_render_pass(self.data.render_pass, None);
         self.data.swapchain_image_views.iter().for_each(|v| self.device.destroy_image_view(*v, None));

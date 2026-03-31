@@ -193,6 +193,8 @@ pub struct AppData {
     pub descriptor_set_layout: vk::DescriptorSetLayout,
     pub pipeline_layout: vk::PipelineLayout,
     pub pipeline: vk::Pipeline,
+    // Sky pipeline (depth write disabled, drawn behind world)
+    pub sky_pipeline: vk::Pipeline,
     // Framebuffers
     pub framebuffers: Vec<vk::Framebuffer>,
     // Command Pool
@@ -215,6 +217,13 @@ pub struct AppData {
     pub level_textures: Vec<LevelTexture>,
     // Draw groups
     pub draw_groups: Vec<DrawGroup>,
+    // Sky rendering
+    /// Index into draw_groups where sky groups begin (sky groups run from here to end)
+    pub sky_draw_group_start: usize,
+    /// Sky world model translation (in scaled world coords)
+    pub sky_translation: [f32; 3],
+    /// Center of the main world model bounding box (in renderer coords)
+    pub map_center: [f32; 3],
     // Model
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,

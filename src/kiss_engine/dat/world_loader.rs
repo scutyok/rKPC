@@ -12,6 +12,15 @@ use crate::lights;
 use crate::types::*;
 use crate::vulkan::texture::get_texture_dimensions;
 
+/// Result of loading a DAT world, containing lights and collision geometry.
+pub struct LoadedWorld {
+    pub lights: Vec<lights::Light>,
+    /// Collision mesh positions (includes invisible surfaces for blocking).
+    pub collision_positions: Vec<cgmath::Vector3<f32>>,
+    /// Collision mesh indices.
+    pub collision_indices: Vec<u32>,
+}
+
 /// Load a KISS Psycho Circus DAT file (v127) and extract mesh data
 ///
 /// # Arguments
@@ -20,13 +29,13 @@ use crate::vulkan::texture::get_texture_dimensions;
 /// * `scale` - Scale factor for the world geometry
 ///
 /// # Returns
-/// Vec of extracted lights from the DAT world objects
+/// A `LoadedWorld` containing lights and collision geometry
 pub fn load_dat_model<P: AsRef<std::path::Path>>(
     data: &mut AppData,
     path: P,
     world_model_index: usize,
     scale: f32,
-) -> Result<Vec<lights::Light>> {
+) -> Result<LoadedWorld> {
     info!("Loading DAT file: {}", path.as_ref().display());
 
     let dat_file = dat::DatFile::read_from_file(&path)
@@ -38,7 +47,23 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
         dat_file.world_models.len()
     );
 
+    // Debug: list all world models to identify sky
+    for (i, wm) in dat_file.world_models.iter().enumerate() {
+        println!("  WorldModel[{}]: name='{}' flags=0x{:X} translation=({:.1},{:.1},{:.1}) polys={}",
+            i, wm.world_name, wm.info_flags,
+            wm.world_translation.x, wm.world_translation.y, wm.world_translation.z,
+            wm.poly_count);
+    }
+
     if let Some(world) = dat_file.world_models.get(world_model_index) {
+        // Compute map center from bounding box (Lithtech Y-up → renderer Z-up)
+        data.map_center = [
+            (world.min_box.x + world.max_box.x) * 0.5 * scale,
+            (world.min_box.z + world.max_box.z) * 0.5 * scale,
+            (world.min_box.y + world.max_box.y) * 0.5 * scale,
+        ];
+        println!("  Map center: ({:.2}, {:.2}, {:.2})", data.map_center[0], data.map_center[1], data.map_center[2]);
+
         println!("=== WORLD MODEL DEBUG ===");
         println!("  World name: {}", world.world_name);
         println!("  Points: {}", world.points.len());
@@ -56,15 +81,36 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
         }
     }
 
-    let extractor = dat_mesh::MeshExtractor::new(&dat_file)
+    // Extract render mesh (skip Invisible textures and skyportal surfaces)
+    let render_extractor = dat_mesh::MeshExtractor::new(&dat_file)
+        .with_scale(scale)
+        .with_skip_invisible(false)
+        .with_skip_sky(false)
+        .with_skip_skyportal(true)
+        .with_flip_winding(false)
+        .with_skip_textures(vec!["invisible".to_string()]);
+
+    let mesh = render_extractor
+        .extract_world_by_index(world_model_index)
+        .ok_or_else(|| anyhow!("World model index {} not found", world_model_index))?;
+
+    // Extract collision mesh (include invisible surfaces so they still block the player)
+    let collision_extractor = dat_mesh::MeshExtractor::new(&dat_file)
         .with_scale(scale)
         .with_skip_invisible(false)
         .with_skip_sky(false)
         .with_flip_winding(false);
 
-    let mesh = extractor
+    let collision_mesh = collision_extractor
         .extract_world_by_index(world_model_index)
-        .ok_or_else(|| anyhow!("World model index {} not found", world_model_index))?;
+        .ok_or_else(|| anyhow!("World model index {} not found (collision)", world_model_index))?;
+
+    let collision_positions: Vec<cgmath::Vector3<f32>> = collision_mesh
+        .vertices
+        .iter()
+        .map(|v| cgmath::vec3(v.pos[0], v.pos[1], v.pos[2]))
+        .collect();
+    let collision_indices = collision_mesh.indices;
 
     info!(
         "Extracted mesh '{}': {} vertices, {} indices, {} texture groups",
@@ -211,6 +257,104 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
         16.0,
     );
 
+    // Mark where sky draw groups will start (after all world + ABC groups)
+    data.sky_draw_group_start = data.draw_groups.len();
+
+    // Extract sky world models (named "sky", "clouds", etc.) and append to buffers
+    {
+        let sky_names = ["sky", "clouds", "clouds2"];
+        let sky_extractor = dat_mesh::MeshExtractor::new(&dat_file)
+            .with_scale(scale)
+            .with_skip_invisible(false)
+            .with_skip_sky(false)
+            .with_skip_skyportal(false)
+            .with_flip_winding(false)
+            .with_skip_textures(vec!["invisible".to_string()]);
+
+        // Find the first sky model to use its translation as the sky origin
+        for wm in &dat_file.world_models {
+            let name_lower = wm.world_name.to_lowercase();
+            if sky_names.iter().any(|&s| name_lower == s) {
+                // Swizzle Y/Z to match renderer coordinate system (Lithtech Y-up → renderer Z-up)
+                data.sky_translation = [
+                    wm.world_translation.x * scale,
+                    wm.world_translation.z * scale,
+                    wm.world_translation.y * scale,
+                ];
+                break;
+            }
+        }
+
+        for (wm_idx, wm) in dat_file.world_models.iter().enumerate() {
+            let name_lower = wm.world_name.to_lowercase();
+            if !sky_names.iter().any(|&s| name_lower == s) {
+                continue;
+            }
+
+            if let Some(sky_mesh) = sky_extractor.extract_world_by_index(wm_idx) {
+                println!("=== SKY MESH '{}': {} verts, {} indices, {} groups ===",
+                    wm.world_name, sky_mesh.vertices.len(), sky_mesh.indices.len(),
+                    sky_mesh.textured_meshes.len());
+
+                for textured_mesh in &sky_mesh.textured_meshes {
+                    let tex_index =
+                        if let Some(&idx) = texture_name_to_index.get(&textured_mesh.texture_name) {
+                            idx
+                        } else {
+                            let idx = texture_names.len();
+                            texture_names.push(textured_mesh.texture_name.clone());
+                            texture_name_to_index.insert(textured_mesh.texture_name.clone(), idx);
+                            idx
+                        };
+
+                    let (tex_width, tex_height) =
+                        if let Some(&dims) = texture_dimensions.get(&textured_mesh.texture_name) {
+                            dims
+                        } else {
+                            let dims = get_texture_dimensions(&textured_mesh.texture_name);
+                            texture_dimensions.insert(textured_mesh.texture_name.clone(), dims);
+                            dims
+                        };
+
+                    let group_vert_base = data.vertices.len() as u32;
+                    let group_idx_base = data.indices.len() as u32;
+
+                    for dat_vert in &textured_mesh.vertices {
+                        let normal = vec3(
+                            dat_vert.normal[0],
+                            dat_vert.normal[2],
+                            dat_vert.normal[1],
+                        );
+                        data.vertices.push(Vertex {
+                            pos: vec3(dat_vert.pos[0], dat_vert.pos[1], dat_vert.pos[2]),
+                            color: vec3(dat_vert.color[0], dat_vert.color[1], dat_vert.color[2]),
+                            tex_coord: vec2(
+                                dat_vert.tex_coord[0] / tex_width as f32,
+                                dat_vert.tex_coord[1] / tex_height as f32,
+                            ),
+                            normal,
+                        });
+                    }
+
+                    for &idx in &textured_mesh.indices {
+                        data.indices.push(group_vert_base + idx);
+                    }
+
+                    data.draw_groups.push(DrawGroup {
+                        texture_index: tex_index,
+                        first_index: group_idx_base,
+                        index_count: textured_mesh.indices.len() as u32,
+                        vertex_offset: 0,
+                    });
+                }
+            }
+        }
+
+        println!("=== Sky groups: {} (starting at index {}) ===",
+            data.draw_groups.len() - data.sky_draw_group_start,
+            data.sky_draw_group_start);
+    }
+
     // Store texture names and dimensions for later loading
     for name in &texture_names {
         let (width, height) = texture_dimensions.get(name).copied().unwrap_or((256, 256));
@@ -285,7 +429,11 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
         println!("  Lights found: {}", world_lights.len());
     }
 
-    Ok(world_lights)
+    Ok(LoadedWorld {
+        lights: world_lights,
+        collision_positions,
+        collision_indices,
+    })
 }
 
 /// Print summary information about a DAT file without loading mesh data
@@ -358,55 +506,62 @@ pub fn subdivide_draw_groups(
     draw_groups: &mut Vec<DrawGroup>,
     cell_size: f32,
 ) {
+    use rayon::prelude::*;
+
+    // Each draw group produces a list of sub-groups (texture_index, cell_indices)
+    let sub_results: Vec<Vec<(usize, Vec<u32>)>> = draw_groups
+        .par_iter()
+        .map(|group| {
+            let start = group.first_index as usize;
+            let end = (start + group.index_count as usize).min(indices.len());
+            let group_indices = &indices[start..end];
+
+            if group.index_count <= 36 {
+                return vec![(group.texture_index, group_indices.to_vec())];
+            }
+
+            let mut cells: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
+
+            for tri in group_indices.chunks(3) {
+                if tri.len() < 3 {
+                    continue;
+                }
+                let v0 = vertices[tri[0] as usize].pos;
+                let v1 = vertices[tri[1] as usize].pos;
+                let v2 = vertices[tri[2] as usize].pos;
+                let cx = (v0.x + v1.x + v2.x) / 3.0;
+                let cy = (v0.y + v1.y + v2.y) / 3.0;
+                let cz = (v0.z + v1.z + v2.z) / 3.0;
+
+                let cell_x = (cx / cell_size).floor() as i32;
+                let cell_y = (cy / cell_size).floor() as i32;
+                let cell_z = (cz / cell_size).floor() as i32;
+
+                cells
+                    .entry((cell_x, cell_y, cell_z))
+                    .or_default()
+                    .extend_from_slice(tri);
+            }
+
+            cells
+                .into_values()
+                .map(|cell_indices| (group.texture_index, cell_indices))
+                .collect()
+        })
+        .collect();
+
+    // Flatten results sequentially to build final index/group buffers
+    let old_group_count = draw_groups.len();
     let mut new_indices: Vec<u32> = Vec::with_capacity(indices.len());
     let mut new_groups: Vec<DrawGroup> = Vec::new();
 
-    for group in draw_groups.iter() {
-        let start = group.first_index as usize;
-        let end = (start + group.index_count as usize).min(indices.len());
-        let group_indices = &indices[start..end];
-
-        if group.index_count <= 36 {
-            let first_index = new_indices.len() as u32;
-            new_indices.extend_from_slice(group_indices);
-            new_groups.push(DrawGroup {
-                texture_index: group.texture_index,
-                first_index,
-                index_count: group.index_count,
-                vertex_offset: 0,
-            });
-            continue;
-        }
-
-        let mut cells: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
-
-        for tri in group_indices.chunks(3) {
-            if tri.len() < 3 {
-                continue;
-            }
-            let v0 = vertices[tri[0] as usize].pos;
-            let v1 = vertices[tri[1] as usize].pos;
-            let v2 = vertices[tri[2] as usize].pos;
-            let cx = (v0.x + v1.x + v2.x) / 3.0;
-            let cy = (v0.y + v1.y + v2.y) / 3.0;
-            let cz = (v0.z + v1.z + v2.z) / 3.0;
-
-            let cell_x = (cx / cell_size).floor() as i32;
-            let cell_y = (cy / cell_size).floor() as i32;
-            let cell_z = (cz / cell_size).floor() as i32;
-
-            cells
-                .entry((cell_x, cell_y, cell_z))
-                .or_default()
-                .extend_from_slice(tri);
-        }
-
-        for (_cell_key, cell_indices) in &cells {
+    for sub_groups in sub_results {
+        for (texture_index, cell_indices) in sub_groups {
             let first_index = new_indices.len() as u32;
             let index_count = cell_indices.len() as u32;
-            new_indices.extend_from_slice(cell_indices);
+            new_indices.extend_from_slice(&cell_indices);
             new_groups.push(DrawGroup {
-                texture_index: group.texture_index,
+                texture_index,
                 first_index,
                 index_count,
                 vertex_offset: 0,
@@ -414,7 +569,6 @@ pub fn subdivide_draw_groups(
         }
     }
 
-    let old_group_count = draw_groups.len();
     *indices = new_indices;
     *draw_groups = new_groups;
     println!(

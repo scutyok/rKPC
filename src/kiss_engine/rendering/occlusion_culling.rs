@@ -6,6 +6,7 @@
 //! to skip geometry that is entirely off-screen.
 
 use cgmath::{Matrix4, Vector3, Vector4};
+use rayon::prelude::*;
 
 /// Axis-aligned bounding box for a draw group.
 #[derive(Clone, Copy, Debug, Default)]
@@ -202,21 +203,36 @@ impl OcclusionCuller {
         indices: &[u32],
         groups: &[(u32, u32)], // (first_index, index_count)
     ) {
-        self.group_aabbs.clear();
+        self.group_aabbs = groups
+            .par_iter()
+            .map(|&(first_index, index_count)| {
+                let start = first_index as usize;
+                let end = (first_index + index_count) as usize;
 
-        for &(first_index, index_count) in groups {
-            let start = first_index as usize;
-            let end = (first_index + index_count) as usize;
-
-            let mut positions: Vec<[f32; 3]> = Vec::new();
-            for i in start..end.min(indices.len()) {
-                let vi = indices[i] as usize;
-                if vi < vertex_positions.len() {
-                    positions.push(vertex_positions[vi]);
+                let mut min = [f32::MAX; 3];
+                let mut max = [f32::MIN; 3];
+                let mut any = false;
+                for i in start..end.min(indices.len()) {
+                    let vi = indices[i] as usize;
+                    if vi < vertex_positions.len() {
+                        let p = vertex_positions[vi];
+                        if !any {
+                            min = p;
+                            max = p;
+                            any = true;
+                        } else {
+                            min[0] = min[0].min(p[0]);
+                            min[1] = min[1].min(p[1]);
+                            min[2] = min[2].min(p[2]);
+                            max[0] = max[0].max(p[0]);
+                            max[1] = max[1].max(p[1]);
+                            max[2] = max[2].max(p[2]);
+                        }
+                    }
                 }
-            }
-            self.group_aabbs.push(GroupAabb::from_positions(&positions));
-        }
+                GroupAabb { min, max }
+            })
+            .collect();
 
         self.visibility.resize(self.group_aabbs.len(), true);
     }
@@ -226,17 +242,13 @@ impl OcclusionCuller {
     /// whether to issue the draw call.
     pub fn cull(&mut self, frustum: &Frustum) {
         self.last_total = self.group_aabbs.len();
-        self.last_visible = 0;
 
-        self.visibility.resize(self.group_aabbs.len(), true);
+        self.visibility = self.group_aabbs
+            .par_iter()
+            .map(|aabb| !frustum.is_aabb_outside(aabb))
+            .collect();
 
-        for (i, aabb) in self.group_aabbs.iter().enumerate() {
-            let visible = !frustum.is_aabb_outside(aabb);
-            self.visibility[i] = visible;
-            if visible {
-                self.last_visible += 1;
-            }
-        }
+        self.last_visible = self.visibility.iter().filter(|&&v| v).count();
     }
 
     /// Check if a specific draw group should be drawn.

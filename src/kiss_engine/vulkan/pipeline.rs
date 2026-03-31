@@ -254,6 +254,32 @@ pub unsafe fn create_pipeline(device: &Device, data: &mut AppData) -> Result<()>
         .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)?
         .0[0];
 
+    // Sky pipeline: same as main but with depth writes disabled so world geometry
+    // draws over the sky naturally.
+    let sky_depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::builder()
+        .depth_test_enable(false)
+        .depth_write_enable(false)
+        .depth_compare_op(vk::CompareOp::LESS)
+        .depth_bounds_test_enable(false)
+        .stencil_test_enable(false);
+
+    let sky_info = vk::GraphicsPipelineCreateInfo::builder()
+        .stages(stages)
+        .vertex_input_state(&vertex_input_state)
+        .input_assembly_state(&input_assembly_state)
+        .viewport_state(&viewport_state)
+        .rasterization_state(&rasterization_state)
+        .multisample_state(&multisample_state)
+        .depth_stencil_state(&sky_depth_stencil_state)
+        .color_blend_state(&color_blend_state)
+        .layout(data.pipeline_layout)
+        .render_pass(data.render_pass)
+        .subpass(0);
+
+    data.sky_pipeline = device
+        .create_graphics_pipelines(vk::PipelineCache::null(), &[sky_info], None)?
+        .0[0];
+
     device.destroy_shader_module(vert_shader_module, None);
     device.destroy_shader_module(frag_shader_module, None);
 

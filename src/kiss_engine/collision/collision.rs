@@ -597,36 +597,42 @@ pub struct MeshHeightProvider {
 
 impl MeshHeightProvider {
 	pub fn new(positions: Vec<Vector3<f32>>, indices: Vec<u32>) -> Self {
-		let mut tri_centroids  = Vec::new();
-		let mut tri_radius_xy  = Vec::new();
-		let mut tri_radius_3d  = Vec::new();
+		use rayon::prelude::*;
+
 		let tri_count = indices.len() / 3;
 
-		for t in 0..tri_count {
-			let i0 = indices[t*3]     as usize;
-			let i1 = indices[t*3 + 1] as usize;
-			let i2 = indices[t*3 + 2] as usize;
-			if i0 >= positions.len() || i1 >= positions.len() || i2 >= positions.len() {
-				tri_centroids.push(Vector3::new(0.0, 0.0, 0.0));
-				tri_radius_xy.push(0.0);
-				tri_radius_3d.push(0.0);
-				continue;
-			}
-			let a = positions[i0];
-			let b = positions[i1];
-			let c = positions[i2];
-			let centroid = (a + b + c) * (1.0 / 3.0);
+		let tri_data: Vec<(Vector3<f32>, f32, f32)> = (0..tri_count)
+			.into_par_iter()
+			.map(|t| {
+				let i0 = indices[t*3]     as usize;
+				let i1 = indices[t*3 + 1] as usize;
+				let i2 = indices[t*3 + 2] as usize;
+				if i0 >= positions.len() || i1 >= positions.len() || i2 >= positions.len() {
+					return (Vector3::new(0.0, 0.0, 0.0), 0.0, 0.0);
+				}
+				let a = positions[i0];
+				let b = positions[i1];
+				let c = positions[i2];
+				let centroid = (a + b + c) * (1.0 / 3.0);
 
-			let mut rxy = 0.0f32;
-			let mut r3d = 0.0f32;
-			for v in [a, b, c].iter() {
-				let dx = v.x - centroid.x;
-				let dy = v.y - centroid.y;
-				let dz = v.z - centroid.z;
-				rxy = rxy.max((dx * dx + dy * dy).sqrt());
-				r3d = r3d.max((dx * dx + dy * dy + dz * dz).sqrt());
-			}
-			tri_centroids.push(centroid);
+				let mut rxy = 0.0f32;
+				let mut r3d = 0.0f32;
+				for v in [a, b, c].iter() {
+					let dx = v.x - centroid.x;
+					let dy = v.y - centroid.y;
+					let dz = v.z - centroid.z;
+					rxy = rxy.max((dx * dx + dy * dy).sqrt());
+					r3d = r3d.max((dx * dx + dy * dy + dz * dz).sqrt());
+				}
+				(centroid, rxy, r3d)
+			})
+			.collect();
+
+		let mut tri_centroids = Vec::with_capacity(tri_count);
+		let mut tri_radius_xy = Vec::with_capacity(tri_count);
+		let mut tri_radius_3d = Vec::with_capacity(tri_count);
+		for (c, rxy, r3d) in tri_data {
+			tri_centroids.push(c);
 			tri_radius_xy.push(rxy);
 			tri_radius_3d.push(r3d);
 		}
