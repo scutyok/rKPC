@@ -29,7 +29,7 @@ pub enum DatError {
 
 pub type Result<T> = std::result::Result<T, DatError>;
 
-// 
+//
 // Basic Types
 //
 
@@ -107,9 +107,9 @@ pub struct Quaternion {
     pub w: f32,
 }
 
-// 
+//
 // World Header
-// 
+//
 
 #[derive(Debug, Default)]
 pub struct WorldHeader {
@@ -118,9 +118,9 @@ pub struct WorldHeader {
     pub render_data_pos: u32,
 }
 
-// 
+//
 // World Info
-// 
+//
 
 #[derive(Debug, Default)]
 pub struct WorldInfo {
@@ -129,18 +129,18 @@ pub struct WorldInfo {
     pub padding: [u32; 8],
 }
 
-// 
+//
 // World Texture
-// 
+//
 
 #[derive(Debug, Clone, Default)]
 pub struct WorldTexture {
     pub name: String,
 }
 
-// 
+//
 // World Plane
-// 
+//
 
 #[derive(Debug, Clone, Default)]
 pub struct WorldPlane {
@@ -148,9 +148,9 @@ pub struct WorldPlane {
     pub distance: f32,
 }
 
-// 
+//
 // World Surface - Contains UV mapping and texture info
-// 
+//
 
 #[derive(Debug, Clone, Default)]
 pub struct WorldSurface {
@@ -190,9 +190,9 @@ impl WorldSurface {
     }
 }
 
-// 
+//
 // World Leaf - BSP leaf nodes containing visibility data
-// 
+//
 
 #[derive(Debug, Clone, Default)]
 pub struct LeafData {
@@ -211,9 +211,9 @@ pub struct WorldLeaf {
     pub unknown: f32,
 }
 
-// 
+//
 // World Polygon - Individual polygon with vertex indices
-// 
+//
 
 #[derive(Debug, Clone, Default)]
 pub struct DiskVert {
@@ -234,9 +234,9 @@ pub struct WorldPoly {
     pub disk_verts: Vec<DiskVert>,
 }
 
-// 
+//
 // World Node - BSP tree nodes
-// 
+//
 
 #[derive(Debug, Clone, Default)]
 pub struct WorldNode {
@@ -248,9 +248,9 @@ pub struct WorldNode {
     pub unknown_quat: Quaternion,
 }
 
-// 
+//
 // World User Portal
-// 
+//
 
 #[derive(Debug, Clone, Default)]
 pub struct WorldUserPortal {
@@ -261,9 +261,9 @@ pub struct WorldUserPortal {
     pub dims: Vector3,
 }
 
-// 
+//
 // PBlock Table - Collision/physics data
-// 
+//
 
 #[derive(Debug, Clone, Default)]
 pub struct PBlockContents {
@@ -287,9 +287,9 @@ pub struct PBlockTable {
     pub blocks: Vec<PBlock>,
 }
 
-// 
+//
 // World BSP
-// 
+//
 
 #[derive(Debug, Default)]
 pub struct WorldBsp {
@@ -343,9 +343,9 @@ pub struct WorldBsp {
     pub section_count: u32,
 }
 
-// 
+//
 // Object Property
-// 
+//
 
 #[derive(Debug, Clone)]
 pub enum PropertyValue {
@@ -369,9 +369,9 @@ pub struct ObjectProperty {
     pub value: PropertyValue,
 }
 
-// 
+//
 // World Object - entities/objects placed in the world
-// 
+//
 
 #[derive(Debug, Clone, Default)]
 pub struct WorldObject {
@@ -406,9 +406,9 @@ impl WorldObject {
     }
 }
 
-// 
+//
 // Main DAT File Structure
-// 
+//
 
 #[derive(Debug, Default)]
 pub struct DatFile {
@@ -418,9 +418,9 @@ pub struct DatFile {
     pub world_models: Vec<WorldBsp>,
 }
 
-// 
+//
 // Reading Implementation
-// 
+//
 
 impl DatFile {
     pub fn read_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
@@ -440,18 +440,9 @@ impl DatFile {
             return Err(DatError::UnsupportedVersion(dat.header.version));
         }
 
-        log::info!(
-            "DAT Version: {} (KISS Psycho Circus)",
-            dat.header.version
-        );
-        log::debug!(
-            "Object Data Position: 0x{:08X}",
-            dat.header.object_data_pos
-        );
-        log::debug!(
-            "Render Data Position: 0x{:08X}",
-            dat.header.render_data_pos
-        );
+        log::info!("DAT Version: {} (KISS Psycho Circus)", dat.header.version);
+        log::debug!("Object Data Position: 0x{:08X}", dat.header.object_data_pos);
+        log::debug!("Render Data Position: 0x{:08X}", dat.header.render_data_pos);
 
         // Read world info
         dat.world_info = WorldInfo::read(reader)?;
@@ -496,11 +487,7 @@ impl DatFile {
                 }
                 Err(e) => {
                     let pos = reader.stream_position().unwrap_or(0);
-                    log::error!(
-                        "Error reading world model at position 0x{:08X}: {}",
-                        pos,
-                        e
-                    );
+                    log::error!("Error reading world model at position 0x{:08X}: {}", pos, e);
                     return Err(e);
                 }
             }
@@ -679,7 +666,10 @@ impl DiskVert {
         let mut dummy = [0u8; 3];
         reader.read_exact(&mut dummy)?;
 
-        Ok(Self { vertex_index, dummy })
+        Ok(Self {
+            vertex_index,
+            dummy,
+        })
     }
 }
 
@@ -1009,9 +999,9 @@ impl WorldObject {
     }
 }
 
-// 
+//
 // Helper Functions
-// 
+//
 
 /// Read a world model entry (with the next_pos header and padding)
 fn read_world_model_entry<R: Read + Seek>(reader: &mut R) -> Result<WorldBsp> {

@@ -3,7 +3,6 @@
 // Binary format: section-based structure
 //   Header → Geometry → Nodes → Animation → AnimDims → TransformInfo (optional)
 //
-// Reference: specs_abc_v6.md
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::collections::HashMap;
@@ -267,7 +266,11 @@ impl AbcModel {
             let section_name = read_lt_string(reader)?;
             next_offset = reader.read_i32::<LittleEndian>()?;
 
-            log::debug!("ABC section: '{}', next_offset={}", section_name, next_offset);
+            log::debug!(
+                "ABC section: '{}', next_offset={}",
+                section_name,
+                next_offset
+            );
 
             match section_name.as_str() {
                 "Header" => {
@@ -286,12 +289,10 @@ impl AbcModel {
                     model.nodes = read_nodes_section(reader)?;
                 }
                 "Animation" => {
-                    model.animations =
-                        read_animation_section(reader, &model.nodes)?;
+                    model.animations = read_animation_section(reader, &model.nodes)?;
                 }
                 "AnimDims" => {
-                    model.anim_dims =
-                        read_animdims_section(reader, model.animations.len())?;
+                    model.anim_dims = read_animdims_section(reader, model.animations.len())?;
                 }
                 "TransformInfo" => {
                     model.transform_info = AbcTransformInfo {
@@ -344,7 +345,11 @@ fn read_geometry_section<R: Read>(reader: &mut R) -> Result<AbcPiece> {
         triangles.push(AbcTriangle {
             tex_coords,
             vertex_indices: [v1, v2, v3],
-            face_normal: AbcNormal { x: nx, y: ny, z: nz },
+            face_normal: AbcNormal {
+                x: nx,
+                y: ny,
+                z: nz,
+            },
         });
     }
 
@@ -363,7 +368,11 @@ fn read_geometry_section<R: Read>(reader: &mut R) -> Result<AbcPiece> {
 
         vertices.push(AbcVertex {
             position,
-            normal: AbcNormal { x: nx, y: ny, z: nz },
+            normal: AbcNormal {
+                x: nx,
+                y: ny,
+                z: nz,
+            },
             transformation_index,
             replacements: [r0, r1],
         });
@@ -371,7 +380,10 @@ fn read_geometry_section<R: Read>(reader: &mut R) -> Result<AbcPiece> {
 
     log::info!(
         "ABC Geometry: {} tris, {} verts ({} normal), {} LODs",
-        num_tris, num_verts, normal_verts, num_lods
+        num_tris,
+        num_verts,
+        normal_verts,
+        num_lods
     );
 
     Ok(AbcPiece {
@@ -428,10 +440,7 @@ fn read_nodes_section<R: Read>(reader: &mut R) -> Result<Vec<AbcNode>> {
     Ok(nodes)
 }
 
-fn read_animation_section<R: Read>(
-    reader: &mut R,
-    nodes: &[AbcNode],
-) -> Result<Vec<AbcAnimation>> {
+fn read_animation_section<R: Read>(reader: &mut R, nodes: &[AbcNode]) -> Result<Vec<AbcAnimation>> {
     let num_anims = reader.read_u32::<LittleEndian>()?;
     let mut animations = Vec::with_capacity(num_anims as usize);
 
@@ -545,10 +554,7 @@ fn read_animation_section<R: Read>(
     Ok(animations)
 }
 
-fn read_animdims_section<R: Read>(
-    reader: &mut R,
-    num_anims: usize,
-) -> Result<Vec<AbcAnimDims>> {
+fn read_animdims_section<R: Read>(reader: &mut R, num_anims: usize) -> Result<Vec<AbcAnimDims>> {
     let mut dims = Vec::with_capacity(num_anims);
     for _ in 0..num_anims {
         dims.push(AbcAnimDims {
@@ -868,7 +874,8 @@ pub fn extract_abc_objects(
             "models/decos/barrel.abc".to_string()
         } else {
             // Try common property names in priority order
-            match obj.get_property("model_name")
+            match obj
+                .get_property("model_name")
                 .or_else(|| obj.get_property("model"))
                 .or_else(|| obj.get_property("Filename"))
             {
@@ -900,7 +907,8 @@ pub fn extract_abc_objects(
         };
 
         // ── Skin texture ───────────────────────────────────────────
-        let skin = match obj.get_property("skin_name")
+        let skin = match obj
+            .get_property("skin_name")
             .or_else(|| obj.get_property("skin"))
             .or_else(|| obj.get_property("Skin"))
         {
@@ -924,9 +932,8 @@ pub fn extract_abc_objects(
         // ── Resolve & load the ABC model ───────────────────────────
         let resolved_path = resolve_rez_path(rez_root, &filename);
 
-        let abc_model = model_cache
-            .entry(resolved_path.clone())
-            .or_insert_with(|| match AbcModel::read_from_file(&resolved_path) {
+        let abc_model = model_cache.entry(resolved_path.clone()).or_insert_with(|| {
+            match AbcModel::read_from_file(&resolved_path) {
                 Ok(m) => {
                     log::info!("Loaded ABC model: {}", resolved_path);
                     Some(m)
@@ -935,7 +942,8 @@ pub fn extract_abc_objects(
                     log::error!("Failed to load ABC model '{}': {}", resolved_path, e);
                     None
                 }
-            });
+            }
+        });
 
         let abc_model = match abc_model {
             Some(m) => m,
@@ -958,24 +966,24 @@ pub fn extract_abc_objects(
         // ABC models and Lithtech world are both Y-up, matching the renderer
         // convention (pos[2] = height after L→V swap, camera up = Z).
         // Rotation: R = Ry(yaw) · Rx(pitch) · Rz(roll)
-        let yaw   =  rot.x;
+        let yaw = rot.x;
         let pitch = -rot.w;
-        let roll  = -rot.y;
+        let roll = -rot.y;
 
         let (sy, cy) = yaw.sin_cos();
         let (sp, cp) = pitch.sin_cos();
         let (sr, cr) = roll.sin_cos();
 
         // R = Ry(yaw) · Rx(pitch) · Rz(roll)
-        let r00 =  cy * cr + sy * sp * sr;
+        let r00 = cy * cr + sy * sp * sr;
         let r01 = -cy * sr + sy * sp * cr;
-        let r02 =  sy * cp;
-        let r10 =  cp * sr;
-        let r11 =  cp * cr;
+        let r02 = sy * cp;
+        let r10 = cp * sr;
+        let r11 = cp * cr;
         let r12 = -sp;
         let r20 = -sy * cr + cy * sp * sr;
-        let r21 =  sy * sr + cy * sp * cr;
-        let r22 =  cy * cp;
+        let r21 = sy * sr + cy * sp * cr;
+        let r22 = cy * cp;
 
         let mut world_verts = base_mesh.vertices.clone();
         for v in &mut world_verts {
@@ -1014,11 +1022,7 @@ pub fn extract_abc_objects(
             type_name: obj.type_name.clone(),
             model_filename: filename.clone(),
             skin_filename: resolved_skin.clone(),
-            position: [
-                pos.x * scale,
-                pos.z * scale,
-                pos.y * scale,
-            ],
+            position: [pos.x * scale, pos.z * scale, pos.y * scale],
             rotation: [rot.x, rot.y, rot.z, rot.w],
             mesh: AbcMesh {
                 vertices: world_verts,
