@@ -11,7 +11,7 @@ use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 use thiserror::Error;
 
-use crate::dat::{PropertyValue, Quaternion, WorldObject};
+use crate::dat::{PropertyValue, Quaternion, Vector3, WorldObject};
 
 // ─── Errors ───
 
@@ -831,6 +831,8 @@ impl AbcModel {
 /// scale taken from the DAT world objects, and a pre-loaded mesh.
 #[derive(Debug, Clone)]
 pub struct PlacedAbcObject {
+    /// Index of the source `WorldObject` inside `dat_file.objects`.
+    pub dat_object_index: usize,
     /// Object type name from DAT (e.g. "CBarrel", "CModel", "CModelDeco")
     pub type_name: String,
     /// Model filename from DAT properties (e.g. "models\\decos\\barrel.abc")
@@ -845,6 +847,287 @@ pub struct PlacedAbcObject {
     pub mesh: AbcMesh,
 }
 
+/// Realm-specific asset info derived from the DAT file path.
+struct RealmInfo {
+    /// Pickup sub-folder name (e.g. "beastking", "celestial", "demon", "starbearer")
+    pickup_folder: &'static str,
+    /// Creature skin prefix for the headless (e.g. "water", "fire", "air", "")
+    creature_prefix: &'static str,
+}
+
+fn detect_realm(dat_path: &str) -> RealmInfo {
+    let upper = dat_path.to_ascii_uppercase();
+    if upper.contains("REALM1") {
+        // Realm 1 = Water
+        RealmInfo { pickup_folder: "starbearer", creature_prefix: "water" }
+    } else if upper.contains("REALM2") {
+        // Realm 2 = Fire
+        RealmInfo { pickup_folder: "demon", creature_prefix: "fire" }
+    } else if upper.contains("REALM3") {
+        // Realm 3 = Air
+        RealmInfo { pickup_folder: "celestial", creature_prefix: "air" }
+    } else if upper.contains("REALM4") {
+        // Realm 4 = Beast King / Earth
+        RealmInfo { pickup_folder: "beastking", creature_prefix: "" }
+    } else {
+        // Default (tutorial, deathmatch, etc.)
+        RealmInfo { pickup_folder: "beastking", creature_prefix: "" }
+    }
+}
+
+/// Map item/creature type names to their correct skin texture paths.
+/// Many objects don't follow the generic model→skin derivation convention.
+fn hardcoded_item_skin(type_name: &str, obj: &WorldObject, realm: &RealmInfo) -> Option<String> {
+    let pf = realm.pickup_folder;
+
+    // Health — skin matches model size variant (shared across realms)
+    if type_name == "healthItem_t" {
+        let large = matches!(obj.get_property("Large (60)"), Some(PropertyValue::Bool(1)));
+        let medium = matches!(obj.get_property("Medium (30)"), Some(PropertyValue::Bool(1)));
+        return Some(if large {
+            format!("skins/pickups/{}/health_large.dtx", pf)
+        } else if medium {
+            format!("skins/pickups/{}/health_medium.dtx", pf)
+        } else {
+            format!("skins/pickups/{}/health_small.dtx", pf)
+        });
+    }
+
+    // Ammo — skin depends on element type (shared across realms)
+    match type_name {
+        "waterAmmoItem_t" => return Some(format!("skins/pickups/{}/ammo_w.dtx", pf)),
+        "fireAmmoItem_t"  => return Some(format!("skins/pickups/{}/ammo_f.dtx", pf)),
+        "earthAmmoItem_t" => return Some(format!("skins/pickups/{}/ammo_e.dtx", pf)),
+        "airAmmoItem_t"   => return Some(format!("skins/pickups/{}/ammo_a.dtx", pf)),
+        _ => {}
+    }
+
+    // ── Armor pieces → realm-specific pickup folder ──
+    let armor_skin = match type_name {
+        "gauntletsArmorItem_t"     => Some("gauntlets.dtx"),
+        "beltArmorItem_t"          => Some("belt.dtx"),
+        "bootsArmorItem_t"         => Some("boots.dtx"),
+        "breastplateArmorItem_t"   => Some("breastplate.dtx"),
+        "shoulderplateArmorItem_t" => Some("shoulderplate.dtx"),
+        "maskArmorItem_t"          => Some("mask.dtx"),
+        _ => None,
+    };
+    if let Some(skin_name) = armor_skin {
+        return Some(format!("skins/pickups/{}/{}", pf, skin_name));
+    }
+
+    let skin = match type_name {
+        // ── Weapon pickups → weapon skins ──
+        "magmaCannonItem_t"  => "skins/weapons/magmacannon/magmacannon.dtx",
+        "zeroCannonItem_t"   => "skins/weapons/zerocannon/zerocannon.dtx",
+        "beastClawsItem_t"   => "skins/weapons/beastclaws/beastclaws.dtx",
+        "dracoItem_t"        => "skins/weapons/draco/draco.dtx",
+        "galaxionItem_t"     => "skins/weapons/galaxion/galaxion.dtx",
+        "punisherItem_t"     => "skins/weapons/punisher/punisher.dtx",
+        "scourgeItem_t"      => "skins/weapons/scourge/scourge.dtx",
+        "spiritLanceItem_t"  => "skins/weapons/spiritlance/spiritlance.dtx",
+        "starGazeItem_t"     => "skins/weapons/stargaze/stargaze.dtx",
+        "thornBladeItem_t"   => "skins/weapons/thornblade/thornblade.dtx",
+        "twisterItem_t"      => "skins/weapons/twister/twister.dtx",
+        "windBladeItem_t"    => "skins/weapons/windblade/windblade.dtx",
+
+        // ── Creatures — realm-specific skin ──
+        "CHeadless" => {
+            let cp = realm.creature_prefix;
+            if cp.is_empty() {
+                return Some("skins/creatures/head.dtx".to_string());
+            } else {
+                return Some(format!("skins/creatures/{}head.dtx", cp));
+            }
+        }
+
+        _ => return None,
+    };
+    Some(skin.to_string())
+}
+
+/// Map item/creature type names to their hardcoded model paths.
+/// KISS Psycho Circus item pickups don't carry a ModelName property;
+/// the engine knows the model from the class name.
+/// Returns `None` for unknown types; the caller falls back to property lookup.
+fn hardcoded_item_model(type_name: &str, obj: &WorldObject, realm: &RealmInfo) -> Option<String> {
+    let pf = realm.pickup_folder;
+
+    // Health — size variant from bool properties
+    if type_name == "healthItem_t" {
+        let large = matches!(obj.get_property("Large (60)"), Some(PropertyValue::Bool(1)));
+        let medium = matches!(obj.get_property("Medium (30)"), Some(PropertyValue::Bool(1)));
+        return Some(if large {
+            format!("models/pickups/{}/health_large.abc", pf)
+        } else if medium {
+            format!("models/pickups/{}/health_medium.abc", pf)
+        } else {
+            format!("models/pickups/{}/health_small.abc", pf)
+        });
+    }
+
+    // Ammo — size variant from bool properties
+    if type_name == "waterAmmoItem_t" || type_name == "fireAmmoItem_t"
+        || type_name == "earthAmmoItem_t" || type_name == "airAmmoItem_t"
+    {
+        let large = matches!(obj.get_property("Large (100)"), Some(PropertyValue::Bool(1)));
+        let medium = matches!(obj.get_property("Medium (40)"), Some(PropertyValue::Bool(1)));
+        return Some(if large {
+            format!("models/pickups/{}/ammo_large.abc", pf)
+        } else if medium {
+            format!("models/pickups/{}/ammo_med.abc", pf)
+        } else {
+            format!("models/pickups/{}/ammo.abc", pf)
+        });
+    }
+
+    let model = match type_name {
+        // ── Weapons ──
+        "magmaCannonItem_t"  => "models/pickups/beastking/pu_magmacannon.abc",
+        "zeroCannonItem_t"   => "models/pickups/beastking/pu_zerocannon.abc",
+        "beastClawsItem_t"   => "models/pickups/beastking/pu_beastclaws.abc",
+        "dracoItem_t"        => "models/pickups/beastking/pu_draco.abc",
+        "galaxionItem_t"     => "models/pickups/beastking/pu_galaxion.abc",
+        "punisherItem_t"     => "models/pickups/beastking/pu_punisher.abc",
+        "scourgeItem_t"      => "models/pickups/beastking/pu_scourge.abc",
+        "spiritLanceItem_t"  => "models/pickups/beastking/pu_spiritlance.abc",
+        "starGazeItem_t"     => "models/pickups/beastking/pu_stargaze.abc",
+        "thornBladeItem_t"   => "models/pickups/beastking/pu_thornblade.abc",
+        "twisterItem_t"      => "models/pickups/beastking/pu_twister.abc",
+        "windBladeItem_t"    => "models/pickups/beastking/pu_windblade.abc",
+
+        // ── Quest / misc pickups ──
+        "angelCharmItem_t"   => "models/pickups/beastking/angelcharm.abc",
+        "bloodRoseItem_t"    => "models/pickups/beastking/bloodrose.abc",
+        "hawkEyesItem_t"     => "models/pickups/beastking/hawkeyes.abc",
+        "pamphletItem_t"     => "models/pickups/beastking/pamphlet.abc",
+        "jackInBoxItem_t"    => "models/pickups/beastking/jackinbox.abc",
+        "powerShardItem_t"   => "models/pickups/beastking/blackdiamond.abc",
+        "chaosHeartItem_t"   => "models/pickups/beastking/chaosheart.abc",
+        "chikaraItem_t"      => "models/pickups/beastking/chikara.abc",
+        "crystalBallItem_t"  => "models/pickups/beastking/crystalball.abc",
+        "purifierItem_t"     => "models/pickups/beastking/purifier.abc",
+        "rageSkullItem_t"    => "models/pickups/beastking/rageskull.abc",
+        "ticketItem_t"       => "models/pickups/beastking/ticket.abc",
+        "keyItem_t"          => "models/pickups/beastking/key.abc",
+        "questBoxItem_t"     => "models/pickups/beastking/qbox.abc",
+
+        // ── Armor pieces (realm-specific models) ──
+        "gauntletsArmorItem_t"     => return Some(format!("models/pickups/{}/gauntlets.abc", pf)),
+        "beltArmorItem_t"          => return Some(format!("models/pickups/{}/belt.abc", pf)),
+        "bootsArmorItem_t"         => return Some(format!("models/pickups/{}/boots.abc", pf)),
+        "breastplateArmorItem_t"   => return Some(format!("models/pickups/{}/breastplate.abc", pf)),
+        "shoulderplateArmorItem_t" => return Some(format!("models/pickups/{}/shoulderplate.abc", pf)),
+        "maskArmorItem_t"          => return Some(format!("models/pickups/{}/mask.abc", pf)),
+
+        // ── Creatures (fallback if no ModelName property) ──
+        "CHeadless"       => "models/creatures/headless.abc",
+        "CArachniclown"   => "models/creatures/arachniclown.abc",
+        "CBallBuster"     => "models/creatures/ballbuster.abc",
+        "CBatwing"        => "models/creatures/batwing.abc",
+        "CBlackwell"      => "models/creatures/blackwell.abc",
+        "CBladeMaster"    => "models/creatures/blademaster.abc",
+        "CFatLady"        => "models/creatures/fatlady.abc",
+        "CGasBag"         => "models/creatures/gasbag.abc",
+        "CGrinder"        => "models/creatures/grinder.abc",
+        "CHellSpore"      => "models/creatures/hellspore.abc",
+        "CLarva"          => "models/creatures/larva.abc",
+        "CMeanieBeanie"   => "models/creatures/meaniebeanie.abc",
+        "CPin"            => "models/creatures/pin.abc",
+        "CRotCrawl"       => "models/creatures/rot_crawl.abc",
+        "CStrongman"      => "models/creatures/strongman.abc",
+        "CStrutter"       => "models/creatures/strutter.abc",
+        "CStump"          => "models/creatures/stump.abc",
+        "CTiberius"        => "models/creatures/tiberius.abc",
+        "CTickler"        => "models/creatures/tickler.abc",
+        "CUniPsycho"      => "models/creatures/unipsycho.abc",
+        "CStarGrave"      => "models/creatures/stargrave.abc",
+        "CFortunado"       => "models/creatures/fortunado.abc",
+        "CRoly"           => "models/creatures/roly.abc",
+        "CSpawnerBase"    => "models/creatures/spawnerbase.abc",
+
+        _ => return None,
+    };
+    Some(model.to_string())
+}
+
+/// A floor triangle for ray-casting, stored in Lithtech space (Y-up).
+pub struct FloorTri {
+    pub v0: [f32; 3],
+    pub v1: [f32; 3],
+    pub v2: [f32; 3],
+}
+
+/// Cast a ray straight down from `pos` and find the highest floor triangle
+/// intersection below the object (Lithtech Y-up space).
+/// Returns the Y coordinate of the intersection point, or None.
+fn find_floor_y(pos: &Vector3, floor_tris: &[FloorTri]) -> Option<f32> {
+    let ox = pos.x;
+    let oz = pos.z;
+    let mut best_y: Option<f32> = None;
+
+    for tri in floor_tris {
+        // Ray-triangle intersection for a downward ray at (ox, ?, oz).
+        // We only need to check if (ox, oz) projects inside the triangle in XZ,
+        // then compute the Y at that point using barycentric coordinates.
+        let (x0, y0, z0) = (tri.v0[0], tri.v0[1], tri.v0[2]);
+        let (x1, y1, z1) = (tri.v1[0], tri.v1[1], tri.v1[2]);
+        let (x2, y2, z2) = (tri.v2[0], tri.v2[1], tri.v2[2]);
+
+        // Barycentric in XZ plane
+        let dx0 = x1 - x0;
+        let dz0 = z1 - z0;
+        let dx1 = x2 - x0;
+        let dz1 = z2 - z0;
+
+        let det = dx0 * dz1 - dx1 * dz0;
+        if det.abs() < 1e-6 { continue; } // Degenerate triangle
+
+        let inv_det = 1.0 / det;
+        let px = ox - x0;
+        let pz = oz - z0;
+
+        let u = (px * dz1 - pz * dx1) * inv_det;
+        if u < -0.001 || u > 1.001 { continue; }
+
+        let v = (dx0 * pz - dz0 * px) * inv_det;
+        if v < -0.001 || v > 1.001 { continue; }
+
+        if u + v > 1.002 { continue; }
+
+        // Compute Y at this point
+        let hit_y = y0 + u * (y1 - y0) + v * (y2 - y0);
+
+        // Only care about surfaces at or below the object (with tolerance for
+        // objects placed slightly below the floor in the editor)
+        if hit_y > pos.y + 20.0 { continue; }
+
+        match best_y {
+            None => best_y = Some(hit_y),
+            Some(by) if hit_y > by => best_y = Some(hit_y),
+            _ => {}
+        }
+    }
+
+    best_y
+}
+
+/// Returns true for object types that should be snapped to the floor below them.
+/// In the original Lithtech engine, these objects call MoveToFloor() at spawn.
+fn should_snap_to_floor(type_name: &str) -> bool {
+    // Barrels
+    if type_name == "CBarrel" { return true; }
+    // Creatures
+    if type_name == "CHeadless" { return true; }
+    // Pickup items (health, ammo, weapons, armor, quest)
+    if type_name.ends_with("Item_t") || type_name == "CPickupTrigger" { return true; }
+    // Crates
+    if type_name == "CCrate" || type_name == "CModelBreakable" { return true; }
+    // Deco / generic models (drums, guitars, props, etc.)
+    if type_name == "CModel" || type_name == "CModelDeco" { return true; }
+    false
+}
+
 /// Scan DAT world objects for ABC model placements, load each referenced model,
 /// transform its mesh to world space, and return placed objects ready for
 /// rendering.
@@ -853,6 +1136,7 @@ pub struct PlacedAbcObject {
 /// - **CBarrel**: hardcoded model (`models/decos/barrel.abc`), skin from `skin_name`
 /// - **CModel / CModelDeco**: model from `model_name`, skin from `skin_name`, per-object `scale`
 /// - **CPickupTrigger**: model from `model`, skin from `skin`
+/// - **Item pickups** (`*Item_t`): hardcoded model from type name
 /// - Any other type with a `model_name` or `model` property pointing to an `.abc` file
 ///
 /// `rez_root` is the path to the REZ directory (e.g. "REZ").
@@ -861,21 +1145,38 @@ pub fn extract_abc_objects(
     objects: &[WorldObject],
     rez_root: &str,
     scale: f32,
+    dat_path: &str,
+    floor_tris: &[FloorTri],
 ) -> Vec<PlacedAbcObject> {
+    let realm = detect_realm(dat_path);
     // Cache loaded ABC models by resolved path
     let mut model_cache: HashMap<String, Option<AbcModel>> = HashMap::new();
     let mut placed = Vec::new();
+    // Track snapped entity bounding cylinders for stacking (Lithtech Y-up coords).
+    // When a new entity is above one already placed, it snaps on top of it
+    // instead of falling through to the BSP floor.
+    struct SnappedEntity {
+        x: f32,            // center X in Lithtech space
+        z: f32,            // center Z in Lithtech space
+        radius_xz: f32,    // horizontal bounding radius
+        top_y: f32,         // top surface Y in Lithtech space
+    }
+    let mut snapped_entities: Vec<SnappedEntity> = Vec::new();
 
-    for obj in objects {
+    for (obj_index, obj) in objects.iter().enumerate() {
         let tn = obj.type_name.as_str();
 
         // ── Determine model filename ───────────────────────────────
+        // Hardcoded model mappings for known types without property-driven models
         let filename = if tn == "CBarrel" {
             "models/decos/barrel.abc".to_string()
+        } else if let Some(hardcoded) = hardcoded_item_model(tn, obj, &realm) {
+            hardcoded
         } else {
-            // Try common property names in priority order
+            // Try common property names in priority order (Lithtech uses camelCase)
             match obj
-                .get_property("model_name")
+                .get_property("ModelName")
+                .or_else(|| obj.get_property("model_name"))
                 .or_else(|| obj.get_property("model"))
                 .or_else(|| obj.get_property("Filename"))
             {
@@ -918,15 +1219,29 @@ pub fn extract_abc_objects(
 
         let resolved_skin = if !skin.is_empty() {
             resolve_rez_path(rez_root, &skin)
+        } else if let Some(hardcoded_skin) = hardcoded_item_skin(tn, obj, &realm) {
+            resolve_rez_path(rez_root, &hardcoded_skin)
         } else {
-            // Fallback: derive skin from model name
-            let base = filename
-                .replace('\\', "/")
+            // Fallback: derive skin from model name, trying multiple conventions.
+            let norm = filename.replace('\\', "/");
+            let skin_base = norm
                 .replace("models/", "skins/")
-                .replace("MODELS/", "SKINS/")
-                .replace(".abc", "_a.dtx")
-                .replace(".ABC", "_A.DTX");
-            resolve_rez_path(rez_root, &base)
+                .replace("MODELS/", "SKINS/");
+
+            // 1) Try without suffix change: models/X.abc → skins/X.dtx
+            let no_suffix = skin_base
+                .replace(".abc", ".dtx")
+                .replace(".ABC", ".DTX");
+            let resolved_no_suffix = resolve_rez_path(rez_root, &no_suffix);
+            if Path::new(&resolved_no_suffix).exists() {
+                resolved_no_suffix
+            } else {
+                // 2) Try with _a suffix: models/X.abc → skins/X_a.dtx (barrel convention)
+                let with_a = skin_base
+                    .replace(".abc", "_a.dtx")
+                    .replace(".ABC", "_A.DTX");
+                resolve_rez_path(rez_root, &with_a)
+            }
         };
 
         // ── Resolve & load the ABC model ───────────────────────────
@@ -954,6 +1269,81 @@ pub fn extract_abc_objects(
         let base_mesh = match abc_model.extract_mesh_lithtech() {
             Some(m) => m,
             None => continue,
+        };
+
+        // ── Floor-snap: adjust Y so model bottom sits on the floor ──
+        // In the original Lithtech engine, ground-based objects call
+        // MoveToFloor() at spawn to drop from their editor position to the
+        // nearest surface below. We approximate this by searching BSP floor
+        // vertices for the highest point below the object.
+        // Height nudge (Lithtech units) added after floor-snap.
+        // Increase to raise objects, decrease to lower them.
+        const FLOOR_SNAP_OFFSET: f32 = 5.0;
+
+        // CModel/CModelDeco objects whose model is a wall-mounted light or
+        // flame should NOT be snapped to the floor.
+        let is_wall_light = if tn == "CModel" || tn == "CModelDeco" {
+            let lower = filename.to_ascii_lowercase();
+            lower.contains("lamp") || lower.contains("light")
+                || lower.contains("flameh") || lower.contains("starlight")
+        } else {
+            false
+        };
+
+        let snap = should_snap_to_floor(tn) && !is_wall_light;
+        let pos = if snap && !floor_tris.is_empty() {
+            let model_min_y = base_mesh.vertices.iter()
+                .map(|v| v.pos[1] * obj_scale)
+                .fold(f32::MAX, f32::min);
+            let model_max_y = base_mesh.vertices.iter()
+                .map(|v| v.pos[1] * obj_scale)
+                .fold(f32::MIN, f32::max);
+            let model_radius_xz = base_mesh.vertices.iter()
+                .map(|v| {
+                    let mx = v.pos[0] * obj_scale;
+                    let mz = v.pos[2] * obj_scale;
+                    (mx * mx + mz * mz).sqrt()
+                })
+                .fold(0.0_f32, f32::max);
+
+            // Find best floor: BSP surface or top of an already-snapped entity.
+            let mut best_floor = find_floor_y(&pos, floor_tris);
+            for ent in &snapped_entities {
+                let dx = pos.x - ent.x;
+                let dz = pos.z - ent.z;
+                let horiz_dist = (dx * dx + dz * dz).sqrt();
+                // Entity top is a valid floor if we overlap horizontally
+                // and the entity top is below our position (with tolerance).
+                if horiz_dist < ent.radius_xz + model_radius_xz
+                    && ent.top_y <= pos.y + 20.0
+                {
+                    match best_floor {
+                        None => best_floor = Some(ent.top_y),
+                        Some(by) if ent.top_y > by => best_floor = Some(ent.top_y),
+                        _ => {}
+                    }
+                }
+            }
+
+            if let Some(floor_y) = best_floor {
+                // Pickup items that spin/bob get a bit more height so they
+                // float slightly above the ground (matches original engine).
+                let pickup_extra = if tn.ends_with("Item_t") || tn == "CPickupTrigger" { 15.0 } else { 0.0 };
+                // Place model bottom at floor_y + offset:
+                let snapped_y = floor_y - model_min_y + FLOOR_SNAP_OFFSET + pickup_extra;
+                // Record this entity so future objects can stack on top.
+                snapped_entities.push(SnappedEntity {
+                    x: pos.x,
+                    z: pos.z,
+                    radius_xz: model_radius_xz,
+                    top_y: snapped_y + model_max_y,
+                });
+                Vector3::new(pos.x, snapped_y, pos.z)
+            } else {
+                pos
+            }
+        } else {
+            pos
         };
 
         // DAT rotation property stores Euler angles (radians), NOT a quaternion.
@@ -1019,6 +1409,7 @@ pub fn extract_abc_objects(
         }
 
         placed.push(PlacedAbcObject {
+            dat_object_index: obj_index,
             type_name: obj.type_name.clone(),
             model_filename: filename.clone(),
             skin_filename: resolved_skin.clone(),
@@ -1040,8 +1431,10 @@ pub fn extract_barrel_objects(
     objects: &[WorldObject],
     rez_root: &str,
     scale: f32,
+    dat_path: &str,
+    floor_tris: &[FloorTri],
 ) -> Vec<PlacedAbcObject> {
-    extract_abc_objects(objects, rez_root, scale)
+    extract_abc_objects(objects, rez_root, scale, dat_path, floor_tris)
 }
 
 /// Resolve a Lithtech asset path (e.g. "models\\decos\\barrel.abc") to an

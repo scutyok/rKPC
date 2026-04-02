@@ -330,7 +330,8 @@ impl<'a> MeshExtractor<'a> {
         };
 
         // Get vertex positions
-        let mut poly_vertices: Vec<(Vector3, Vector2)> = Vec::with_capacity(polygon.disk_verts.len());
+        // Each element: (world-space pos, UV, per-vertex baked light 0..255)
+        let mut poly_vertices: Vec<(Vector3, Vector2, Vector3)> = Vec::with_capacity(polygon.disk_verts.len());
 
         for disk_vert in &polygon.disk_verts {
             let vert_idx = disk_vert.vertex_index as usize;
@@ -350,7 +351,15 @@ impl<'a> MeshExtractor<'a> {
             // calculate texture coordinates using surface UV vectors
             let uv = self.calculate_uv(&pos, surface);
 
-            poly_vertices.push((scaled_pos, uv));
+            // disk_vert.dummy[0..2] = per-vertex pre-baked RGB light (0..255 each).
+            // These are the compile-time lighting values stored by the Lithtech world compiler.
+            let light = Vector3::new(
+                disk_vert.dummy[0] as f32,
+                disk_vert.dummy[1] as f32,
+                disk_vert.dummy[2] as f32,
+            );
+
+            poly_vertices.push((scaled_pos, uv, light));
         }
 
         if poly_vertices.len() < 3 {
@@ -359,25 +368,23 @@ impl<'a> MeshExtractor<'a> {
 
         // Fan triangulation from first vertex
         let v0 = &poly_vertices[0];
-        // Use white color - let textures provide color, not surface colour
-        // Surface colour is often not what we want for textured rendering
-        let color = Vector3::new(255.0, 255.0, 255.0);
 
         for i in 1..poly_vertices.len() - 1 {
             let v1 = &poly_vertices[i];
             let v2 = &poly_vertices[i + 1];
 
+            // Use per-vertex baked light from disk_vert.dummy for each corner.
             let (a, b, c) = if self.flip_winding {
                 (
-                    DatVertex::new(v0.0, color, v0.1, normal),
-                    DatVertex::new(v2.0, color, v2.1, normal),
-                    DatVertex::new(v1.0, color, v1.1, normal),
+                    DatVertex::new(v0.0, v0.2, v0.1, normal),
+                    DatVertex::new(v2.0, v2.2, v2.1, normal),
+                    DatVertex::new(v1.0, v1.2, v1.1, normal),
                 )
             } else {
                 (
-                    DatVertex::new(v0.0, color, v0.1, normal),
-                    DatVertex::new(v1.0, color, v1.1, normal),
-                    DatVertex::new(v2.0, color, v2.1, normal),
+                    DatVertex::new(v0.0, v0.2, v0.1, normal),
+                    DatVertex::new(v1.0, v1.2, v1.1, normal),
+                    DatVertex::new(v2.0, v2.2, v2.1, normal),
                 )
             };
 

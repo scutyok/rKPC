@@ -127,6 +127,10 @@ pub struct GpuLight {
 pub struct LightingUBO {
     pub camera_pos: [f32; 4],
     pub ambient: [f32; 4],
+    /// rgb = fog colour, a = unused
+    pub fog_color: [f32; 4],
+    /// x = fog near distance, y = fog far distance, z = 1.0 if enabled / 0.0 if disabled, w = unused
+    pub fog_params: [f32; 4],
     pub light_count: u32,
     pub _pad: [u32; 3],
     pub lights: [GpuLight; MAX_LIGHTS],
@@ -137,6 +141,8 @@ impl Default for LightingUBO {
         Self {
             camera_pos: [0.0; 4],
             ambient: [0.4, 0.4, 0.4, 0.0],
+            fog_color: [0.05, 0.05, 0.08, 0.0],
+            fog_params: [5.0, 22.0, 1.0, 0.0],
             light_count: 0,
             _pad: [0; 3],
             lights: [GpuLight {
@@ -154,6 +160,10 @@ pub struct DrawGroup {
     pub first_index: u32,
     pub index_count: u32,
     pub vertex_offset: i32,
+    /// Per-object model matrix applied as push constant before this draw call.
+    /// None = identity (world-geometry default). Set by game_objects system for
+    /// animated objects (doors, fans) and cleared for destroyed objects.
+    pub model_matrix: Option<[[f32; 4]; 4]>,
 }
 
 #[derive(Clone, Debug, Default)]

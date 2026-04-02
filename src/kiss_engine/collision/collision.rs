@@ -69,6 +69,23 @@ mod bvh;
 
 
 // ------------------------------------------------------------------ //
+// EntityCylinder — upright cylinder collider for barrels/creatures
+// ------------------------------------------------------------------ //
+
+/// A vertical cylinder used for entity collision (barrels, headless, etc.).
+/// Axis is along Z (Vulkan up). Collision is resolved radially in XY for
+/// smooth sliding.
+#[derive(Clone, Copy, Debug)]
+pub struct EntityCylinder {
+	pub center_x: f32,
+	pub center_y: f32,
+	pub radius: f32,
+	pub z_min: f32,
+	pub z_max: f32,
+}
+
+
+// ------------------------------------------------------------------ //
 // PhysicsSphere — bounding sphere for quick culling
 // ------------------------------------------------------------------ //
 

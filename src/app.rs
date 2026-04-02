@@ -23,6 +23,7 @@ use winit::window::Window;
 
 use rustKPC::collision;
 use rustKPC::egui_renderer;
+use rustKPC::game_objects::GameObjectManager;
 use rustKPC::lights;
 use rustKPC::occlusion_culling;
 use rustKPC::camera::{Camera, InputState};
@@ -65,6 +66,19 @@ pub struct App {
     pub world_lights: Vec<lights::Light>,
     /// Cached lighting UBO (rebuilt only when lights change, not every frame)
     pub cached_light_ubo: LightingUBO,
+    // Game objects
+    pub game_objects: GameObjectManager,
+    /// Entity cylinders for solid objects (barrels, creatures) — player can't walk through.
+    pub entity_cylinders: Vec<collision::EntityCylinder>,
+    /// Total elapsed time in seconds (for torch flicker etc.)
+    pub elapsed_time: f32,
+    // Fog
+    pub fog_enabled: bool,
+    pub fog_near: f32,
+    pub fog_far: f32,
+    pub fog_color: [f32; 3],
+    /// Sky fog far distance (from SkyFogFarZ property).
+    pub sky_fog_far: f32,
 }
 
 impl App {
@@ -89,6 +103,8 @@ impl App {
 
         let loaded = load_dat_model(&mut data, "REZ/WORLDS/REALM1/R1M1A.DAT", 0, 0.01)?;
         let initial_lights = loaded.lights;
+        let initial_game_objects = loaded.game_objects;
+        let initial_entity_cylinders = loaded.entity_cylinders;
 
         vulkan::create_texture_image(&instance, &device, &mut data)?;
         vulkan::create_texture_image_view(&device, &mut data)?;
@@ -134,6 +150,13 @@ impl App {
             culler
         };
 
+        let (fog_enabled, fog_near, fog_far, fog_color, sky_fog_far) =
+            if let Some(fog) = loaded.fog {
+                (fog.enabled, fog.near_z, fog.far_z, fog.color, fog.sky_fog_far)
+            } else {
+                (true, 5.0_f32, 22.0_f32, [0.05_f32, 0.05, 0.08], 22.0_f32)
+            };
+
         let app = Self {
             entry,
             instance,
@@ -163,7 +186,15 @@ impl App {
             on_ground: false,
             occlusion_culler: initial_occlusion_culler,
             world_lights: initial_lights.clone(),
-            cached_light_ubo: Self::build_light_ubo(&initial_lights),
+            cached_light_ubo: Self::build_light_ubo(&initial_lights, fog_color, fog_near, fog_far, fog_enabled, sky_fog_far),
+            game_objects: initial_game_objects,
+            entity_cylinders: initial_entity_cylinders,
+            elapsed_time: 0.0,
+            fog_enabled,
+            fog_near,
+            fog_far,
+            fog_color,
+            sky_fog_far,
         };
 
         // Upload the full light UBO to all persistently mapped swapchain buffers
@@ -172,13 +203,21 @@ impl App {
         Ok(app)
     }
 
-    /// Build a LightingUBO from a list of lights, pre-computing GPU-friendly values.
-    /// Called once when lights change (map load), not every frame.
-    fn build_light_ubo(world_lights: &[lights::Light]) -> LightingUBO {
+    /// Build a LightingUBO from a list of lights and current fog settings.
+    fn build_light_ubo(
+        world_lights: &[lights::Light],
+        fog_color: [f32; 3],
+        fog_near: f32,
+        fog_far: f32,
+        fog_enabled: bool,
+        sky_fog_far: f32,
+    ) -> LightingUBO {
         let mut ubo = LightingUBO::default();
         let count = world_lights.len().min(MAX_LIGHTS);
         ubo.light_count = count as u32;
         ubo.ambient = [0.4, 0.4, 0.4, 0.0];
+        ubo.fog_color = [fog_color[0], fog_color[1], fog_color[2], 0.0];
+        ubo.fog_params = [fog_near, fog_far, if fog_enabled { 1.0 } else { 0.0 }, sky_fog_far];
 
         for (i, l) in world_lights.iter().take(count).enumerate() {
             let r_sq = l.radius * l.radius;
@@ -441,14 +480,15 @@ impl App {
             // to bring vertices to local origin, scale down to bring the sky closer,
             // then translate to camera position (including walk-mode eye offset).
             let sky_t = self.data.sky_translation;
-            let sky_scale = 0.25;
+            let sky_scale = 1.0;
+            let sky_z_raise = 1.0_f32; // raise the sky dome upward
             let eye_z = if self.player_mode == collision::PlayerMode::Walk && !self.is_free_cam {
                 self.eye_offset_walk
             } else {
                 0.0
             };
             let cam_eye = self.camera.position + vec3(0.0, 0.0, eye_z);
-            let sky_model = Mat4::from_translation(cam_eye)
+            let sky_model = Mat4::from_translation(cam_eye + vec3(0.0, 0.0, sky_z_raise))
                 * Mat4::from_scale(sky_scale)
                 * Mat4::from_translation(-vec3(sky_t[0], sky_t[1], sky_t[2]));
             let sky_model_bytes = std::slice::from_raw_parts(
@@ -504,15 +544,7 @@ impl App {
                 world_flag_bytes,
             );
 
-            let model = Mat4::from_scale(1.0);
-            let model_bytes = std::slice::from_raw_parts(&model as *const Mat4 as *const u8, size_of::<Mat4>());
-            self.device.cmd_push_constants(
-                command_buffer,
-                self.data.pipeline_layout,
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                model_bytes,
-            );
+            // Model matrix is pushed per draw-group inside the loop below.
 
             if self.data.draw_groups.is_empty() {
                 self.device.cmd_bind_descriptor_sets(
@@ -529,6 +561,32 @@ impl App {
                     if !self.occlusion_culler.is_visible(group_idx) {
                         continue;
                     }
+                    // Skip objects that have been destroyed (index_count set to 0)
+                    if group.index_count == 0 {
+                        continue;
+                    }
+
+                    // Push per-group model matrix (identity for static geo, delta for dynamic objects)
+                    let model: Mat4 = if let Some(mat) = group.model_matrix {
+                        cgmath::Matrix4::new(
+                            mat[0][0], mat[0][1], mat[0][2], mat[0][3],
+                            mat[1][0], mat[1][1], mat[1][2], mat[1][3],
+                            mat[2][0], mat[2][1], mat[2][2], mat[2][3],
+                            mat[3][0], mat[3][1], mat[3][2], mat[3][3],
+                        )
+                    } else {
+                        Mat4::from_scale(1.0)
+                    };
+                    let model_bytes = std::slice::from_raw_parts(
+                        &model as *const Mat4 as *const u8, size_of::<Mat4>());
+                    self.device.cmd_push_constants(
+                        command_buffer,
+                        self.data.pipeline_layout,
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        model_bytes,
+                    );
+
                     let descriptor_set = if group.texture_index < self.data.level_textures.len()
                         && !self.data.level_textures[group.texture_index].descriptor_sets.is_empty()
                     {
@@ -614,6 +672,31 @@ impl App {
             if let Some(mesh) = &self.mesh_provider {
                 mesh.resolve_player_movement(prev_pos, &mut self.camera.position, 0.25);
             }
+
+            // Push player out of entity cylinders (barrels, headless enemies).
+            // Radial pushback in XY produces smooth sliding along curved surfaces.
+            let player_radius = 0.25_f32;
+            for cyl in &self.entity_cylinders {
+                // Vertical overlap check (player feet to head)
+                let player_z_min = self.camera.position.z - 0.5;
+                let player_z_max = self.camera.position.z + 0.5;
+                if player_z_max < cyl.z_min || player_z_min > cyl.z_max {
+                    continue;
+                }
+                let dx = self.camera.position.x - cyl.center_x;
+                let dy = self.camera.position.y - cyl.center_y;
+                let dist = (dx * dx + dy * dy).sqrt();
+                let min_dist = cyl.radius + player_radius;
+                if dist < min_dist && dist > 1e-6 {
+                    // Push out radially by exactly the penetration amount.
+                    let penetration = min_dist - dist;
+                    let nx = dx / dist;
+                    let ny = dy / dist;
+                    self.camera.position.x += nx * penetration;
+                    self.camera.position.y += ny * penetration;
+                }
+            }
+
             let _before_z = self.camera.position.z;
             collision::resolve_player_collision(
                 &mut self.camera.position,
@@ -656,6 +739,39 @@ impl App {
                 self.on_ground = true;
             }
         }
+    }
+
+    /// Tick all game objects, apply physics state-machines, and upload dynamic lights if needed.
+    pub unsafe fn update_objects(&mut self, dt: f32) {
+        self.elapsed_time += dt;
+        let player_pos = [
+            self.camera.position.x,
+            self.camera.position.y,
+            self.camera.position.z,
+        ];
+        self.game_objects.update(dt, self.elapsed_time, player_pos, &mut self.data.draw_groups);
+
+        // If there are dynamic lights (explosions, torches) this frame, rebuild the UBO
+        let dynamic = self.game_objects.dynamic_lights(self.elapsed_time);
+        if !dynamic.is_empty() {
+            let mut all_lights = self.world_lights.clone();
+            all_lights.extend(dynamic);
+            let combined_ubo = Self::build_light_ubo(
+                &all_lights, self.fog_color, self.fog_near, self.fog_far, self.fog_enabled, self.sky_fog_far);
+            for mapped in &self.data.light_uniform_buffers_mapped {
+                memcpy(&combined_ubo, (*mapped).cast(), 1);
+            }
+        }
+    }
+
+    /// Handle E-key interaction: open nearby doors, activate switches.
+    pub fn interact(&mut self) {
+        let player_pos = [
+            self.camera.position.x,
+            self.camera.position.y,
+            self.camera.position.z,
+        ];
+        self.game_objects.interact(player_pos, &mut self.data.draw_groups);
     }
 
     /// Run the egui UI
@@ -871,6 +987,59 @@ impl App {
                     ui.separator();
                     ui.add_space(5.0);
 
+                    // ── Fog controls ─────────────────────────────────
+                    ui.label(egui::RichText::new("Fog").color(egui::Color32::LIGHT_GRAY));
+                    let fog_changed = {
+                        let prev = self.fog_enabled;
+                        ui.checkbox(&mut self.fog_enabled, "Enable Fog");
+                        let mut changed = self.fog_enabled != prev;
+
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Near").color(egui::Color32::GRAY));
+                            changed |= ui.add(
+                                egui::Slider::new(&mut self.fog_near, 0.0..=50.0)
+                                    .fixed_decimals(1)
+                                    .text(""),
+                            ).changed();
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Far ").color(egui::Color32::GRAY));
+                            changed |= ui.add(
+                                egui::Slider::new(&mut self.fog_far, 1.0..=200.0)
+                                    .fixed_decimals(1)
+                                    .text(""),
+                            ).changed();
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Color").color(egui::Color32::GRAY));
+                            let mut rgba = egui::Color32::from_rgb(
+                                (self.fog_color[0] * 255.0) as u8,
+                                (self.fog_color[1] * 255.0) as u8,
+                                (self.fog_color[2] * 255.0) as u8,
+                            );
+                            if ui.color_edit_button_srgba(&mut rgba).changed() {
+                                self.fog_color = [
+                                    rgba.r() as f32 / 255.0,
+                                    rgba.g() as f32 / 255.0,
+                                    rgba.b() as f32 / 255.0,
+                                ];
+                                changed = true;
+                            }
+                        });
+                        changed
+                    };
+                    if fog_changed {
+                        // Rebuild and upload the lighting UBO immediately so the change is
+                        // visible next frame without waiting for a dynamic-light tick.
+                        self.cached_light_ubo = Self::build_light_ubo(
+                            &self.world_lights, self.fog_color, self.fog_near, self.fog_far, self.fog_enabled, self.sky_fog_far);
+                        unsafe { self.upload_light_ubo_to_all(); }
+                    }
+
+                    ui.add_space(5.0);
+                    ui.separator();
+                    ui.add_space(5.0);
+
                     egui::ScrollArea::vertical()
                         .max_height(300.0)
                         .show(ui, |ui| {
@@ -997,7 +1166,18 @@ impl App {
         // Load new world
         let loaded = load_dat_model(&mut self.data, world_path, 0, 0.01)?;
         self.world_lights = loaded.lights;
-        self.cached_light_ubo = Self::build_light_ubo(&self.world_lights);
+        self.game_objects = loaded.game_objects;
+        self.entity_cylinders = loaded.entity_cylinders;
+        self.elapsed_time = 0.0;
+        if let Some(fog) = loaded.fog {
+            self.fog_enabled = fog.enabled;
+            self.fog_near = fog.near_z;
+            self.fog_far = fog.far_z;
+            self.fog_color = fog.color;
+            self.sky_fog_far = fog.sky_fog_far;
+        }
+        self.cached_light_ubo = Self::build_light_ubo(
+            &self.world_lights, self.fog_color, self.fog_near, self.fog_far, self.fog_enabled, self.sky_fog_far);
         self.upload_light_ubo_to_all();
 
         // Install mesh-backed height provider (uses collision mesh which includes invisible surfaces)

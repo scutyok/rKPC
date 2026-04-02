@@ -2,6 +2,35 @@
 
 >An full remake of the game [Kiss: Psycho Circus: The Nightmare Child](https://en.wikipedia.org/wiki/Kiss:_Psycho_Circus:_The_Nightmare_Child) using the programming language Rust and the graphical API Vulkan.
 
+<h2>How it came to be</h2>
+
+It started as a [DLL injection project/D3D9 hook](http://https://github.com/scutyok/KPCmemoryHook "DLL injection project/D3D9 hook") but it has transpired into being a full KPC:TN remake project. The original Lithtech 1.5 engine had it's physics FPS based, which led to speedruns of this game being very frustrating, locking to 24FPS being mandatory. This remake is made to address these issues as well to preserve the game in a modern, playable state.
+
+<h2>Engine Capabilities</h2>
+
+- Reading .DAT world files
+	-	BVH based collisions
+	-	Reading and rendering the BSP tree
+	-	Reading objects
+	-	Reading and applying world proprieties
+- Reading, rendering and assigning .ABC models to objects
+- Reading, rendering and assigning .DTX textures to surfaces and models
+- Dynamic Lighting
+- UV Lighting 
+- Simple Skyboxes (six-sided)
+- Complex Skyboxes (mirroring of models)
+- Occlusion culling
+- Lithtech 1.0 Fog
+
+<h2>Roadmap</h2>
+
+- [ ] Interactive objects (Sliding doors, Levers, etc..)
+- [ ] Enemy AI
+- [ ] HUD
+- [ ] Player State
+- [ ] Quake-like movement
+- [ ] Triggers
+
 <h2>How to use</h2>
 
 <ol>
@@ -23,9 +52,10 @@
 | Shift         | Descend                |
 | F1            | Open Debug menu        |
 | ESC           | Unlock the cursor      |
+| E             | Interact               |
 
 <h2>Thanks to</h2>
 
   [Kyle Mayes for making a tutorial on Vulkan for Rust](https://kylemayes.github.io/vulkanalia/introduction.html)
-
+  [Monolith for releasing their source code on various lithtech games which served as a guide](https://github.com/jsj2008/lithtech)
 

@@ -217,6 +217,7 @@ fn main() -> Result<()> {
                     // Update camera (only when UI is hidden)
                     if !app.world_chooser.visible && app.loading_state == LoadingState::Ready {
                         app.update_camera(dt);
+                        unsafe { app.update_objects(dt); }
                     }
                     unsafe { app.render(&window, &mut egui_renderer, &clipped_primitives, full_output.pixels_per_point) }.unwrap();
                 }
@@ -265,6 +266,9 @@ fn main() -> Result<()> {
                         PhysicalKey::Code(KeyCode::KeyD) if !app.world_chooser.visible => app.input.right = pressed,
                         PhysicalKey::Code(KeyCode::Space) if !app.world_chooser.visible => app.input.up = pressed,
                         PhysicalKey::Code(KeyCode::ShiftLeft) | PhysicalKey::Code(KeyCode::ShiftRight) if !app.world_chooser.visible => app.input.down = pressed,
+                        PhysicalKey::Code(KeyCode::KeyE) if !app.world_chooser.visible => {
+                            if pressed { app.interact(); }
+                        }
                         PhysicalKey::Code(KeyCode::Escape) if pressed => {
                             if app.world_chooser.visible {
                                 app.world_chooser.visible = false;

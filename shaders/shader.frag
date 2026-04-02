@@ -19,6 +19,8 @@ struct PointLight {
 layout(binding = 2) uniform LightingData {
     vec4 cameraPos;       // xyz = camera world position
     vec4 ambient;         // rgb = ambient light color
+    vec4 fogColor;        // rgb = fog colour
+    vec4 fogParams;       // x = near, y = far, z = 1.0 enabled / 0.0 disabled, w = skyFogFar
     uint lightCount;
     uint _pad0;
     uint _pad1;
@@ -37,21 +39,37 @@ layout(location = 0) out vec4 outColor;
 void main() {
     vec4 texColor = texture(texSampler, fragTexCoord);
 
+    // Alpha test: discard fully transparent fragments (fences, grates, etc.)
+    if (texColor.a < 0.5) {
+        discard;
+    }
+
     // Sky mode: negative opacity = sky (no lighting), magnitude = alpha
     if (push.opacity < 0.0) {
-        outColor = vec4(texColor.rgb, texColor.a * abs(push.opacity));
+        vec4 skyColor = vec4(texColor.rgb, texColor.a * abs(push.opacity));
+        // Apply heavy distance fog to the sky, matching the original engine where
+        if (lighting.fogParams.z > 0.5) {
+            vec3 skyDir = normalize(fragWorldPos - lighting.cameraPos.xyz);
+            float heightFactor = clamp(skyDir.z, 0.0, 1.0);
+            float skyFogAmount = 1.0 - 0.4 * pow(heightFactor, 1.5);
+            skyColor.rgb = mix(skyColor.rgb, lighting.fogColor.rgb, skyFogAmount);
+        }
+        outColor = skyColor;
         return;
     }
 
     // Normal is already normalized from vertex shader
     vec3 N = fragNormal;
 
-    // Ambient base
-    vec3 totalLight = lighting.ambient.rgb;
+    // Use pre-baked vertex light as the base illumination.
+    // fragColor = surface.colour/255 for BSP geometry (pre-compiled lighting from the .dat file).
+    // fragColor = (1,1,1) for ABC placed objects (no pre-baked data — they stay fully lit).
+    vec3 totalLight = fragColor;
 
-    // Accumulate point light contributions
-    uint count = min(lighting.lightCount, 128u);
-    for (uint i = 0u; i < count; i++) {
+    // lightCount is uniform across the draw call — clamp once so the loop bound
+    // is a compile-time-visible constant range for the driver optimizer.
+    int count = int(min(lighting.lightCount, 128u));
+    for (int i = 0; i < count; i++) {
         vec3  lightPos   = lighting.lights[i].positionRadiusSq.xyz;
         float radiusSq   = lighting.lights[i].positionRadiusSq.w;
         vec3  lightColI  = lighting.lights[i].colorIntensity.rgb; // pre-multiplied color*intensity
@@ -79,5 +97,15 @@ void main() {
         totalLight += lightColI * NdotL * atten;
     }
 
-    outColor = vec4(texColor.rgb * totalLight, 1.0);
+    outColor = vec4(texColor.rgb * totalLight, texColor.a);
+
+    // Linear distance fog (Lithtech-style: fog = mix(fogColor, litColor, factor))
+    // fogParams.z == 1.0 means fog is enabled.  Sky mode skips fog via the early return above.
+    if (lighting.fogParams.z > 0.5) {
+        float dist = length(fragWorldPos - lighting.cameraPos.xyz);
+        float fogNear = lighting.fogParams.x;
+        float fogFar  = lighting.fogParams.y;
+        float fogFactor = clamp((fogFar - dist) / (fogFar - fogNear), 0.0, 1.0);
+        outColor.rgb = mix(lighting.fogColor.rgb, outColor.rgb, fogFactor);
+    }
 }

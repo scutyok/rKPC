@@ -190,8 +190,7 @@ pub unsafe fn create_pipeline(device: &Device, data: &mut AppData) -> Result<()>
         .depth_bias_enable(false);
 
     let multisample_state = vk::PipelineMultisampleStateCreateInfo::builder()
-        .sample_shading_enable(true)
-        .min_sample_shading(0.2)
+        .sample_shading_enable(false)
         .rasterization_samples(data.msaa_samples);
 
     let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::builder()
@@ -254,10 +253,22 @@ pub unsafe fn create_pipeline(device: &Device, data: &mut AppData) -> Result<()>
         .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)?
         .0[0];
 
-    // Sky pipeline: same as main but with depth writes disabled so world geometry
-    // draws over the sky naturally.
+    // Sky pipeline: depth test ON so sky faces occlude each other correctly,
+    // depth write OFF so world geometry always draws over sky.
+    // Front-face culling: sky BSP normals face outward; viewer is inside the
+    // dome, so we want the back-faces (inward-facing) rendered. Culling front
+    // faces avoids modifying mesh winding and preserves original UV mapping.
+    let sky_rasterization_state = vk::PipelineRasterizationStateCreateInfo::builder()
+        .depth_clamp_enable(false)
+        .rasterizer_discard_enable(false)
+        .polygon_mode(vk::PolygonMode::FILL)
+        .line_width(1.0)
+        .cull_mode(vk::CullModeFlags::FRONT)
+        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+        .depth_bias_enable(false);
+
     let sky_depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::builder()
-        .depth_test_enable(false)
+        .depth_test_enable(true)
         .depth_write_enable(false)
         .depth_compare_op(vk::CompareOp::LESS)
         .depth_bounds_test_enable(false)
@@ -268,7 +279,7 @@ pub unsafe fn create_pipeline(device: &Device, data: &mut AppData) -> Result<()>
         .vertex_input_state(&vertex_input_state)
         .input_assembly_state(&input_assembly_state)
         .viewport_state(&viewport_state)
-        .rasterization_state(&rasterization_state)
+        .rasterization_state(&sky_rasterization_state)
         .multisample_state(&multisample_state)
         .depth_stencil_state(&sky_depth_stencil_state)
         .color_blend_state(&color_blend_state)
