@@ -26,6 +26,7 @@ use crate::DemoSkyWorldModel::{SkyModelInfo, SkyWorldModelObject};
 use crate::OutsideDef::OutsideDefObject;
 use crate::CPickupItem::{self, PickupItemObject};
 use crate::CCreature::{self, CreatureObject};
+use crate::scripted_sequence::{BspDoor, BspDoorState, ScriptRunner, ScriptCommand};
 
 
 
@@ -103,12 +104,44 @@ impl GameObject {
 
 // ─── Game Object Manager ─────────────────────────────────────────────────────
 
+/// A BSP trigger volume that activates a script when the player presses E inside it.
+#[derive(Debug, Clone)]
+pub struct ScriptTrigger {
+    pub name: String,
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+    pub activated: bool,
+}
+
+impl ScriptTrigger {
+    pub fn contains(&self, pos: [f32; 3]) -> bool {
+        pos[0] >= self.min[0] && pos[0] <= self.max[0]
+            && pos[1] >= self.min[1] && pos[1] <= self.max[1]
+            && pos[2] >= self.min[2] && pos[2] <= self.max[2]
+    }
+}
+
+/// A BSP-based switch (CSwitchSlide / CSwitchRotating) — geometry is a world model, not an ABC.
+#[derive(Debug, Clone)]
+pub struct BspSwitch {
+    pub name: String,
+    pub center: [f32; 3],
+    /// SCR script trigger names this switch activates (resolved from CScriptObject chain).
+    pub script_targets: Vec<String>,
+    pub activated: bool,
+    pub draw_groups: Vec<usize>,
+}
+
 pub struct GameObjectManager {
     pub objects: Vec<GameObject>,
     pub explosion_lights: Vec<ExplosionLight>,
     pub player_in_water: bool,
     pub player_on_ladder: bool,
     pub player_outside: bool,
+    pub bsp_doors: Vec<BspDoor>,
+    pub scripts: Vec<(String, ScriptRunner)>,
+    pub script_triggers: Vec<ScriptTrigger>,
+    pub bsp_switches: Vec<BspSwitch>,
 }
 
 impl GameObjectManager {
@@ -119,6 +152,10 @@ impl GameObjectManager {
             player_in_water: false,
             player_on_ladder: false,
             player_outside: false,
+            bsp_doors: Vec::new(),
+            scripts: Vec::new(),
+            script_triggers: Vec::new(),
+            bsp_switches: Vec::new(),
         }
     }
 
@@ -128,9 +165,12 @@ impl GameObjectManager {
         dat_objects: &[WorldObject],
         placed: &[PlacedAbcObject],
         first_draw_group: usize,
-        bsp_submodels: &[(String, [f32; 3], Vec<usize>)],
+        bsp_submodels: &[(String, [f32; 3], Vec<usize>, f32)],
         torch_flames: &[(usize, usize, usize)],
         sky_models: &[SkyModelInfo],
+        trigger_volumes: &[(String, [f32; 3], [f32; 3])],
+        door_collision_ranges: &[(String, usize, usize)],
+        collision_positions: &[cgmath::Vector3<f32>],
         scale: f32,
     ) -> Self {
         let mut mgr = Self::new();
@@ -150,17 +190,30 @@ impl GameObjectManager {
                     mgr.objects.push(GameObject::Crate(CCrate::parse(pos, props, dg)));
                 }
                 "CDoorSliding" => {
-                    mgr.objects.push(GameObject::Door(CDoorSliding::parse(pos, props, dg, scale)));
+                    let mesh_bounds = if !abc.mesh.vertices.is_empty() {
+                        let mut bmin = [f32::MAX; 3];
+                        let mut bmax = [f32::MIN; 3];
+                        for v in &abc.mesh.vertices {
+                            for k in 0..3 {
+                                bmin[k] = bmin[k].min(v.pos[k]);
+                                bmax[k] = bmax[k].max(v.pos[k]);
+                            }
+                        }
+                        Some((bmin, bmax))
+                    } else {
+                        None
+                    };
+                    mgr.objects.push(GameObject::Door(CDoorSliding::parse(pos, props, dg, scale, mesh_bounds)));
                 }
                 "CSwitchRotating" => {
-                    mgr.objects.push(GameObject::Switch(
-                        CSwitchRotating::parse_rotating(pos, props, dg),
-                    ));
+                    let sw = CSwitchRotating::parse_rotating(pos, props, dg);
+                    println!("  Switch at ({:.2},{:.2},{:.2}) → target='{}'", pos[0], pos[1], pos[2], sw.target_name);
+                    mgr.objects.push(GameObject::Switch(sw));
                 }
                 "CSwitchSlide" => {
-                    mgr.objects.push(GameObject::Switch(
-                        CSwitchRotating::parse_slide(pos, props, dg),
-                    ));
+                    let sw = CSwitchRotating::parse_slide(pos, props, dg);
+                    println!("  SwitchSlide at ({:.2},{:.2},{:.2}) → target='{}'", pos[0], pos[1], pos[2], sw.target_name);
+                    mgr.objects.push(GameObject::Switch(sw));
                 }
                 "CTorch" => {
                     let (fdg, fti) = torch_flames
@@ -236,12 +289,32 @@ impl GameObjectManager {
             }
         }
 
-        // BSP sub-models: rotating ceiling fans
-        for (name, pivot, dgs) in bsp_submodels {
+        // BSP sub-models: rotating ceiling fans and doors
+        for (name, pivot, dgs, z_height) in bsp_submodels {
             if name.to_ascii_uppercase().starts_with("CROTATINGCEILINGFAN") {
                 mgr.objects.push(GameObject::Fan(
                     CRotatingCeilingFan::parse_from_bsp(*pivot, dgs.clone()),
                 ));
+            }
+            let nl = name.to_lowercase();
+            if nl.starts_with("door") || nl.starts_with("freezedoor") {
+                // Find the collision vertex range for this door
+                let coll_range = door_collision_ranges.iter()
+                    .find(|(n, _, _)| n == &nl);
+                let (coll_vertex_range, coll_base) = if let Some(&(_, start, end)) = coll_range {
+                    (Some((start, end)), collision_positions[start..end].to_vec())
+                } else {
+                    (None, Vec::new())
+                };
+                mgr.bsp_doors.push(BspDoor {
+                    name: nl,
+                    draw_groups: dgs.clone(),
+                    slide_distance: *z_height,
+                    slide_offset: 0.0,
+                    state: BspDoorState::Closed,
+                    collision_vertex_range: coll_vertex_range,
+                    collision_base_positions: coll_base,
+                });
             }
         }
 
@@ -252,12 +325,33 @@ impl GameObjectManager {
             ));
         }
 
+        // Register trigger volumes for script activation via E key
+        for (name, vmin, vmax) in trigger_volumes {
+            mgr.script_triggers.push(ScriptTrigger {
+                name: name.to_lowercase(),
+                min: *vmin,
+                max: *vmax,
+                activated: false,
+            });
+        }
+
         log::info!(
             "GameObjectManager: {} interactive + {} sky objects",
             mgr.objects.iter().filter(|o| !matches!(o, GameObject::SkyModel(_))).count(),
             mgr.objects.iter().filter(|o| matches!(o, GameObject::SkyModel(_))).count(),
         );
         mgr
+    }
+
+    /// Collect current AABBs of doors that should block the player.
+    pub fn door_aabbs(&self) -> Vec<([f32; 3], [f32; 3])> {
+        self.objects.iter().filter_map(|obj| {
+            if let GameObject::Door(d) = obj {
+                d.current_aabb()
+            } else {
+                None
+            }
+        }).collect()
     }
 
     // ── Per-frame update ─────────────────────────────────────────────────────
@@ -308,6 +402,30 @@ impl GameObjectManager {
         }
         self.explosion_lights.retain(|el| el.time_remaining > 0.0);
 
+        // Tick BSP doors
+        for door in &mut self.bsp_doors {
+            door.update(dt, draw_groups);
+        }
+
+        // Tick script runners and collect fired commands
+        let mut fired_commands: Vec<ScriptCommand> = Vec::new();
+        for (_name, runner) in &mut self.scripts {
+            fired_commands.extend(runner.update(dt));
+        }
+
+        // Dispatch fired script commands
+        for cmd in fired_commands {
+            match cmd {
+                ScriptCommand::TriggerDoorOpen { door_name } => {
+                    for door in &mut self.bsp_doors {
+                        if door.name == door_name {
+                            door.open();
+                        }
+                    }
+                }
+            }
+        }
+
         self.player_in_water = false;
         self.player_on_ladder = false;
         self.player_outside = false;
@@ -321,6 +439,13 @@ impl GameObjectManager {
         }
     }
 
+    /// Update collision mesh vertices for any BSP doors that are sliding open.
+    pub fn update_door_collision(&self, collision_positions: &mut [cgmath::Vector3<f32>]) {
+        for door in &self.bsp_doors {
+            door.update_collision(collision_positions);
+        }
+    }
+
     // ── Interaction ──────────────────────────────────────────────────────────
 
     pub fn interact(&mut self, player_pos: [f32; 3], draw_groups: &mut Vec<DrawGroup>) {
@@ -329,6 +454,7 @@ impl GameObjectManager {
         for obj in &mut self.objects {
             if let GameObject::Switch(sw) = obj {
                 if let Some(target) = CSwitchRotating::try_interact(sw, player_pos, draw_groups) {
+                    println!("[INTERACT] Switch triggered → target='{}'", target);
                     targets_to_open.push(target);
                 }
             }
@@ -341,6 +467,56 @@ impl GameObjectManager {
                     && targets_to_open.contains(&d.trigger_name);
                 if in_range || switch_linked {
                     d.open();
+                }
+            }
+        }
+
+        // Start scripts whose trigger name matches a switch target (case-insensitive)
+        for target in &targets_to_open {
+            let target_lower = target.to_lowercase();
+            for (name, runner) in &mut self.scripts {
+                if name.to_lowercase() == target_lower {
+                    println!("[SCRIPT] Starting script '{}' (switch target '{}')", name, target);
+                    runner.start();
+                }
+            }
+        }
+
+        // BSP switches (CSwitchSlide/CSwitchRotating BSP sub-models)
+        let mut bsp_switch_targets: Vec<String> = Vec::new();
+        for sw in &mut self.bsp_switches {
+            if !sw.activated && dist3(player_pos, sw.center) < INTERACT_RADIUS {
+                println!("[BSP SWITCH] '{}' activated → scripts: {:?}", sw.name, sw.script_targets);
+                sw.activated = true;
+                bsp_switch_targets.extend(sw.script_targets.clone());
+            }
+        }
+        for target in &bsp_switch_targets {
+            for (name, runner) in &mut self.scripts {
+                if name == target {
+                    println!("[SCRIPT] Starting script '{}' (BSP switch)", name);
+                    runner.start();
+                }
+            }
+        }
+
+        // Check if player is inside a trigger volume and start matching script
+        let mut trigger_script_targets: Vec<String> = Vec::new();
+        for trigger in &mut self.script_triggers {
+            if !trigger.activated && trigger.contains(player_pos) {
+                println!("[TRIGGER] Player inside volume '{}' → activating", trigger.name);
+                trigger.activated = true;
+                trigger_script_targets.push(trigger.name.clone());
+            }
+        }
+        for tname in &trigger_script_targets {
+            for (script_name, runner) in &mut self.scripts {
+                // Match if script name appears in trigger name or vice versa
+                if tname.contains(script_name.as_str())
+                    || script_name.contains(tname.as_str())
+                {
+                    println!("[SCRIPT] Starting script '{}' (trigger volume '{}')", script_name, tname);
+                    runner.start();
                 }
             }
         }

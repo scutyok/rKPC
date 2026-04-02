@@ -260,6 +260,9 @@ fn main() -> Result<()> {
                                 app.player_mode = if app.is_free_cam { collision::PlayerMode::Flying } else { collision::PlayerMode::Walk };
                             }
                         }
+                        PhysicalKey::Code(KeyCode::F2) if pressed => {
+                            app.toggle_triggers();
+                        }
                         PhysicalKey::Code(KeyCode::KeyW) if !app.world_chooser.visible => app.input.forward = pressed,
                         PhysicalKey::Code(KeyCode::KeyS) if !app.world_chooser.visible => app.input.backward = pressed,
                         PhysicalKey::Code(KeyCode::KeyA) if !app.world_chooser.visible => app.input.left = pressed,

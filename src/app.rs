@@ -79,6 +79,10 @@ pub struct App {
     pub fog_color: [f32; 3],
     /// Sky fog far distance (from SkyFogFarZ property).
     pub sky_fog_far: f32,
+    /// Whether trigger/volume sub-models are visible.
+    pub show_triggers: bool,
+    /// Draw-group indices + original index counts for trigger volumes.
+    pub trigger_draw_groups: Vec<(usize, u32)>,
 }
 
 impl App {
@@ -157,7 +161,7 @@ impl App {
                 (true, 5.0_f32, 22.0_f32, [0.05_f32, 0.05, 0.08], 22.0_f32)
             };
 
-        let app = Self {
+        let mut app = Self {
             entry,
             instance,
             data,
@@ -195,7 +199,16 @@ impl App {
             fog_far,
             fog_color,
             sky_fog_far,
+            show_triggers: false,
+            trigger_draw_groups: loaded.trigger_draw_groups,
         };
+
+        // Hide trigger draw groups by default
+        for &(dg_idx, _) in &app.trigger_draw_groups {
+            if let Some(dg) = app.data.draw_groups.get_mut(dg_idx) {
+                dg.index_count = 0;
+            }
+        }
 
         // Upload the full light UBO to all persistently mapped swapchain buffers
         app.upload_light_ubo_to_all();
@@ -697,6 +710,40 @@ impl App {
                 }
             }
 
+            // Push player out of door AABBs (sliding doors block when not fully open).
+            {
+                let pr = 0.25_f32; // player radius
+                let pz_min = self.camera.position.z - 0.5;
+                let pz_max = self.camera.position.z + 0.5;
+                for (amin, amax) in self.game_objects.door_aabbs() {
+                    // Expand AABB by player radius for minkowski-sum collision.
+                    let ex_min = [amin[0] - pr, amin[1] - pr, amin[2]];
+                    let ex_max = [amax[0] + pr, amax[1] + pr, amax[2]];
+                    let px = self.camera.position.x;
+                    let py = self.camera.position.y;
+                    if px > ex_min[0] && px < ex_max[0]
+                        && py > ex_min[1] && py < ex_max[1]
+                        && pz_max > ex_min[2] && pz_min < ex_max[2]
+                    {
+                        // Find smallest pushback axis.
+                        let push_xn = px - ex_min[0];
+                        let push_xp = ex_max[0] - px;
+                        let push_yn = py - ex_min[1];
+                        let push_yp = ex_max[1] - py;
+                        let min_push = push_xn.min(push_xp).min(push_yn).min(push_yp);
+                        if min_push == push_xn {
+                            self.camera.position.x = ex_min[0];
+                        } else if min_push == push_xp {
+                            self.camera.position.x = ex_max[0];
+                        } else if min_push == push_yn {
+                            self.camera.position.y = ex_min[1];
+                        } else {
+                            self.camera.position.y = ex_max[1];
+                        }
+                    }
+                }
+            }
+
             let _before_z = self.camera.position.z;
             collision::resolve_player_collision(
                 &mut self.camera.position,
@@ -751,6 +798,11 @@ impl App {
         ];
         self.game_objects.update(dt, self.elapsed_time, player_pos, &mut self.data.draw_groups);
 
+        // Update door collision vertices to follow sliding doors
+        if let Some(mesh) = &mut self.mesh_provider {
+            self.game_objects.update_door_collision(&mut mesh.positions);
+        }
+
         // If there are dynamic lights (explosions, torches) this frame, rebuild the UBO
         let dynamic = self.game_objects.dynamic_lights(self.elapsed_time);
         if !dynamic.is_empty() {
@@ -772,6 +824,17 @@ impl App {
             self.camera.position.z,
         ];
         self.game_objects.interact(player_pos, &mut self.data.draw_groups);
+    }
+
+    /// Toggle visibility of trigger / volume sub-models (F2).
+    pub fn toggle_triggers(&mut self) {
+        self.show_triggers = !self.show_triggers;
+        for &(dg_idx, original_count) in &self.trigger_draw_groups {
+            if let Some(dg) = self.data.draw_groups.get_mut(dg_idx) {
+                dg.index_count = if self.show_triggers { original_count } else { 0 };
+            }
+        }
+        log::info!("Triggers: {}", if self.show_triggers { "visible" } else { "hidden" });
     }
 
     /// Run the egui UI
@@ -1168,7 +1231,16 @@ impl App {
         self.world_lights = loaded.lights;
         self.game_objects = loaded.game_objects;
         self.entity_cylinders = loaded.entity_cylinders;
+        self.trigger_draw_groups = loaded.trigger_draw_groups;
         self.elapsed_time = 0.0;
+        // Hide triggers by default on world load
+        if !self.show_triggers {
+            for &(dg_idx, _) in &self.trigger_draw_groups {
+                if let Some(dg) = self.data.draw_groups.get_mut(dg_idx) {
+                    dg.index_count = 0;
+                }
+            }
+        }
         if let Some(fog) = loaded.fog {
             self.fog_enabled = fog.enabled;
             self.fog_near = fog.near_z;

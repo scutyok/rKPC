@@ -59,6 +59,9 @@ pub mod CPickupItem;
 #[path = "kiss_engine/dat/objects/CCreature.rs"]
 pub mod CCreature;
 
+#[path = "kiss_engine/dat/objects/scripted_sequence.rs"]
+pub mod scripted_sequence;
+
 #[path = "kiss_engine/dat/world_loader.rs"]
 pub mod world_loader;
 

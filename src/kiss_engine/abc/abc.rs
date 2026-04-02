@@ -861,14 +861,14 @@ fn detect_realm(dat_path: &str) -> RealmInfo {
         // Realm 1 = Water
         RealmInfo { pickup_folder: "starbearer", creature_prefix: "water" }
     } else if upper.contains("REALM2") {
-        // Realm 2 = Fire
-        RealmInfo { pickup_folder: "demon", creature_prefix: "fire" }
+        // Realm 2 = Earth
+        RealmInfo { pickup_folder: "beastking", creature_prefix: "" }
     } else if upper.contains("REALM3") {
         // Realm 3 = Air
         RealmInfo { pickup_folder: "celestial", creature_prefix: "air" }
     } else if upper.contains("REALM4") {
-        // Realm 4 = Beast King / Earth
-        RealmInfo { pickup_folder: "beastking", creature_prefix: "" }
+        // Realm 4 = Fire
+        RealmInfo { pickup_folder: "demon", creature_prefix: "fire" }
     } else {
         // Default (tutorial, deathmatch, etc.)
         RealmInfo { pickup_folder: "beastking", creature_prefix: "" }
@@ -1280,17 +1280,18 @@ pub fn extract_abc_objects(
         // Increase to raise objects, decrease to lower them.
         const FLOOR_SNAP_OFFSET: f32 = 5.0;
 
-        // CModel/CModelDeco objects whose model is a wall-mounted light or
-        // flame should NOT be snapped to the floor.
-        let is_wall_light = if tn == "CModel" || tn == "CModelDeco" {
+        // CModel/CModelDeco objects whose model is a wall-mounted decoration
+        // (light, flame, gargoyle, mask) should NOT be snapped to the floor.
+        let is_wall_mounted = if tn == "CModel" || tn == "CModelDeco" {
             let lower = filename.to_ascii_lowercase();
             lower.contains("lamp") || lower.contains("light")
                 || lower.contains("flameh") || lower.contains("starlight")
+                || lower.contains("garg") || lower.contains("mask")
         } else {
             false
         };
 
-        let snap = should_snap_to_floor(tn) && !is_wall_light;
+        let snap = should_snap_to_floor(tn) && !is_wall_mounted;
         let pos = if snap && !floor_tris.is_empty() {
             let model_min_y = base_mesh.vertices.iter()
                 .map(|v| v.pos[1] * obj_scale)

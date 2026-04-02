@@ -46,6 +46,10 @@ pub struct DoorObject {
     pub draw_group: usize,
     pub auto_close: bool,
     pub open_hold_timer: f32,
+    /// Collision AABB half-extents (from mesh bounds).
+    pub half_extents: [f32; 3],
+    /// Center offset of the AABB from position.
+    pub aabb_center: [f32; 3],
 }
 
 impl DoorObject {
@@ -59,6 +63,23 @@ impl DoorObject {
         if self.state == DoorState::Open {
             self.state = DoorState::Closing { progress: 1.0 };
         }
+    }
+
+    /// Returns the current AABB min/max accounting for door slide.
+    /// Returns None if the door is fully open.
+    pub fn current_aabb(&self) -> Option<([f32; 3], [f32; 3])> {
+        if self.state == DoorState::Open {
+            return None;
+        }
+        let t = self.slide_fraction() * self.slide_distance;
+        let d = self.slide_dir;
+        let cx = self.aabb_center[0] + d[0] * t;
+        let cy = self.aabb_center[1] + d[1] * t;
+        let cz = self.aabb_center[2] + d[2] * t;
+        Some((
+            [cx - self.half_extents[0], cy - self.half_extents[1], cz - self.half_extents[2]],
+            [cx + self.half_extents[0], cy + self.half_extents[1], cz + self.half_extents[2]],
+        ))
     }
 
     fn slide_fraction(&self) -> f32 {
@@ -84,6 +105,7 @@ pub fn parse(
     props: Option<&WorldObject>,
     draw_group: usize,
     scale: f32,
+    mesh_bounds: Option<([f32; 3], [f32; 3])>,
 ) -> DoorObject {
     let raw_dir = props
         .and_then(|o| o.get_property("SlideDir"))
@@ -103,6 +125,15 @@ pub fn parse(
         [1.0, 0.0, 0.0]
     };
 
+    let (half_extents, aabb_center) = if let Some((bmin, bmax)) = mesh_bounds {
+        (
+            [(bmax[0] - bmin[0]) * 0.5, (bmax[1] - bmin[1]) * 0.5, (bmax[2] - bmin[2]) * 0.5],
+            [(bmin[0] + bmax[0]) * 0.5, (bmin[1] + bmax[1]) * 0.5, (bmin[2] + bmax[2]) * 0.5],
+        )
+    } else {
+        ([0.5, 0.5, 1.0], pos)
+    };
+
     DoorObject {
         position: pos,
         state: DoorState::Closed,
@@ -113,6 +144,8 @@ pub fn parse(
         draw_group,
         auto_close: prop_bool(props, "AutoClose", false),
         open_hold_timer: 0.0,
+        half_extents,
+        aabb_center,
     }
 }
 

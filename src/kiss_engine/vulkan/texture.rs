@@ -20,16 +20,57 @@ pub fn load_dtx_texture(path: &std::path::Path) -> Result<LoadedTexture> {
     let dtx = dtx::DtxFile::read_from_file(path)
         .map_err(|e| anyhow!("Failed to load DTX file {:?}: {}", path, e))?;
 
+    let name = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    let mut pixels = dtx.pixels;
+
+    // Apply chromakey (black → transparent) for textures that need it.
+    if needs_chromakey(path) {
+        apply_chromakey(&mut pixels);
+    }
+
     Ok(LoadedTexture {
-        pixels: dtx.pixels,
+        pixels,
         width: dtx.width as u32,
         height: dtx.height as u32,
-        name: path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string(),
+        name,
     })
+}
+
+/// Returns true for textures that use palette-index-0 / near-black as a
+/// transparency key (cobwebs, fences, grates, chains, etc.).
+fn needs_chromakey(path: &std::path::Path) -> bool {
+    let s = path.to_string_lossy().to_ascii_lowercase().replace('\\', "/");
+    // Match by filename or path fragment
+    let patterns: &[&str] = &[
+        "cobweb", "spiderweb", "web",
+        "fence", "bars",
+        "chain", "rope",
+        "vines", "ivy",
+        "railing",
+        "lattice",
+        "net",
+        "chlinkdeluxe",
+        "ladder_met",
+    ];
+    let fname = s.rsplit('/').next().unwrap_or(&s);
+    patterns.iter().any(|p| fname.contains(p))
+}
+
+/// Turn near-black pixels (R+G+B ≤ 15) fully transparent.
+fn apply_chromakey(pixels: &mut [u8]) {
+    for chunk in pixels.chunks_exact_mut(4) {
+        let r = chunk[0] as u16;
+        let g = chunk[1] as u16;
+        let b = chunk[2] as u16;
+        if r + g + b <= 15 {
+            chunk[3] = 0;
+        }
+    }
 }
 
 /// Create a solid color texture as fallback

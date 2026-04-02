@@ -41,6 +41,8 @@ pub struct LoadedWorld {
     pub fog: Option<LevelFogSettings>,
     /// Entity cylinders for solid objects (barrels, headless enemies) in Vulkan coords.
     pub entity_cylinders: Vec<collision::EntityCylinder>,
+    /// Draw-group indices that belong to trigger / volume sub-models (toggleable).
+    pub trigger_draw_groups: Vec<(usize, u32)>,
 }
 
 /// Load a KISS Psycho Circus DAT file (v127) and extract mesh data
@@ -110,7 +112,7 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
         .with_skip_sky(false)
         .with_skip_skyportal(true)
         .with_flip_winding(false)
-        .with_skip_textures(vec!["invisible".to_string()]);
+        .with_skip_textures(vec!["invisible".to_string(), "clip".to_string()]);
 
     let mesh = render_extractor
         .extract_world_by_index(world_model_index)
@@ -127,12 +129,12 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
         .extract_world_by_index(world_model_index)
         .ok_or_else(|| anyhow!("World model index {} not found (collision)", world_model_index))?;
 
-    let collision_positions: Vec<cgmath::Vector3<f32>> = collision_mesh
+    let mut collision_positions: Vec<cgmath::Vector3<f32>> = collision_mesh
         .vertices
         .iter()
         .map(|v| cgmath::vec3(v.pos[0], v.pos[1], v.pos[2]))
         .collect();
-    let collision_indices = collision_mesh.indices;
+    let mut collision_indices: Vec<u32> = collision_mesh.indices;
 
     info!(
         "Extracted mesh '{}': {} vertices, {} indices, {} texture groups",
@@ -353,29 +355,28 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
     // These are BSP world models with indices 1..end that are not sky/cloud models.
     // Their polygon vertices are in sub-model-local space; we apply world_translation
     // to position them in the world.
-    // bsp_submodels tracks (world_name, position_vulkan, draw_group_indices) for
-    // animated objects like ceiling fans.
-    let mut bsp_submodels: Vec<(String, [f32; 3], Vec<usize>)> = Vec::new();
+    // bsp_submodels tracks (world_name, position_vulkan, draw_group_indices, z_height) for
+    // animated objects like ceiling fans and BSP doors.
+    let mut bsp_submodels: Vec<(String, [f32; 3], Vec<usize>, f32)> = Vec::new();
+    let mut trigger_draw_groups: Vec<(usize, u32)> = Vec::new();
+    // Trigger volumes: (name, AABB min, AABB max) for volumes the player can interact with.
+    let mut trigger_volumes: Vec<(String, [f32; 3], [f32; 3])> = Vec::new();
+    // Collision vertex ranges for doors: (lowercase_name, start_index, end_index)
+    let mut door_collision_ranges: Vec<(String, usize, usize)> = Vec::new();
     {
         let sky_names = &sky_model_names;
+        // Use skip_invisible(false) for all sub-world models: Lithtech marks
+        // many valid sub-model surfaces (fences, grates, thin brushes) with the
+        // INVISIBLE flag.  The original engine renders them through the object
+        // system; we must include them here.  Non-renderable surfaces are still
+        // filtered out by texture name ("invisible", "clip").
         let sub_extractor = dat_mesh::MeshExtractor::new(&dat_file)
-            .with_scale(scale)
-            .with_skip_invisible(true)
-            .with_skip_sky(true)
-            .with_skip_skyportal(true)
-            .with_flip_winding(false)
-            .with_skip_textures(vec!["invisible".to_string()]);
-
-        // Separate extractor for animated models — does NOT skip invisible surfaces
-        // because Lithtech marks dynamic BSP mesh surfaces with INVISIBLE so the
-        // engine can skip-render them normally and let the object system handle them.
-        let dyn_extractor = dat_mesh::MeshExtractor::new(&dat_file)
             .with_scale(scale)
             .with_skip_invisible(false)
             .with_skip_sky(true)
             .with_skip_skyportal(true)
             .with_flip_winding(false)
-            .with_skip_textures(vec!["invisible".to_string()]);
+            .with_skip_textures(vec!["invisible".to_string(), "clip".to_string()]);
 
         for wm_idx in 1..dat_file.world_models.len() {
             let wm = &dat_file.world_models[wm_idx];
@@ -386,7 +387,25 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
 
             let is_fan = name_lower.starts_with("crotatingceilingfan");
 
-            let sub_mesh = match (if is_fan { &dyn_extractor } else { &sub_extractor })
+            let is_trigger = name_lower.starts_with("volumebrush")
+                || name_lower.starts_with("cvolume")
+                || name_lower.starts_with("cnodevolume")
+                || name_lower.starts_with("cdamagevolume")
+                || name_lower.starts_with("ckillvolume")
+                || name_lower.starts_with("trigger")
+                || name_lower.starts_with("ctrigger")
+                || name_lower.starts_with("cpickuptrigger")
+                || name_lower.starts_with("lava")
+                || name_lower.starts_with("clava")
+                || name_lower.starts_with("cslime")
+                || name_lower.starts_with("zone")
+                || name_lower.starts_with("portalbrush")
+                || name_lower.starts_with("deathvolume")
+                || name_lower.starts_with("cdeathvolume")
+                || name_lower.starts_with("teleportvolume")
+                || name_lower.starts_with("cteleportvolume");
+
+            let sub_mesh = match sub_extractor
                 .extract_world_by_index(wm_idx)
             {
                 Some(m) => m,
@@ -406,10 +425,27 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
             let tz = wm.world_translation.y * scale;
 
             let mut this_model_dgs: Vec<usize> = Vec::new();
+            let is_door = name_lower.starts_with("door") || name_lower.starts_with("freezedoor");
+            let collision_start = collision_positions.len();
 
             for textured_mesh in &sub_mesh.textured_meshes {
                 if textured_mesh.indices.is_empty() {
                     continue;
+                }
+
+                // Add collision geometry for ladders, chainlink/fence, and door sub-models
+                let is_collision_submodel = name_lower.starts_with("cladder")
+                    || name_lower.starts_with("midtexture")
+                    || name_lower.starts_with("door")
+                    || name_lower.starts_with("freezedoor");
+                if is_collision_submodel {
+                    let base = collision_positions.len() as u32;
+                    for v in &textured_mesh.vertices {
+                        collision_positions.push(cgmath::vec3(v.pos[0], v.pos[1], v.pos[2]));
+                    }
+                    for &i in &textured_mesh.indices {
+                        collision_indices.push(base + i);
+                    }
                 }
 
                 let skin_name = textured_mesh.texture_name.clone();
@@ -455,6 +491,15 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
                     model_matrix: None,
                 });
                 this_model_dgs.push(dg_idx);
+                if is_trigger {
+                    trigger_draw_groups.push((dg_idx, textured_mesh.indices.len() as u32));
+                }
+            }
+
+            // Record collision vertex range for door sub-models
+            let collision_end = collision_positions.len();
+            if is_door && collision_end > collision_start {
+                door_collision_ranges.push((name_lower.clone(), collision_start, collision_end));
             }
 
             if !this_model_dgs.is_empty() {
@@ -462,12 +507,12 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
                 // rotation pivot. world_translation is often (0,0,0) for BSP sub-models
                 // that bake their position into vertex coordinates, so it can't be trusted
                 // as the spin center.
+                let all_verts: Vec<_> = sub_mesh
+                    .textured_meshes
+                    .iter()
+                    .flat_map(|tm| tm.vertices.iter())
+                    .collect();
                 let pivot = if is_fan {
-                    let all_verts: Vec<_> = sub_mesh
-                        .textured_meshes
-                        .iter()
-                        .flat_map(|tm| tm.vertices.iter())
-                        .collect();
                     if all_verts.is_empty() {
                         [tx, ty, tz]
                     } else {
@@ -481,7 +526,30 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
                 } else {
                     [tx, ty, tz]
                 };
-                bsp_submodels.push((wm.world_name.clone(), pivot, this_model_dgs));
+                // Compute Z height (up axis in Vulkan) for BSP door slide distance.
+                let z_height = if all_verts.is_empty() {
+                    2.0
+                } else {
+                    let z_min = all_verts.iter().map(|v| v.pos[2]).fold(f32::MAX, f32::min);
+                    let z_max = all_verts.iter().map(|v| v.pos[2]).fold(f32::MIN, f32::max);
+                    z_max - z_min
+                };
+                bsp_submodels.push((wm.world_name.clone(), pivot, this_model_dgs, z_height));
+
+                // Track trigger volumes with their AABB for script activation.
+                if is_trigger && !all_verts.is_empty() {
+                    let mut vmin = [f32::MAX; 3];
+                    let mut vmax = [f32::MIN; 3];
+                    for v in &all_verts {
+                        for k in 0..3 {
+                            vmin[k] = vmin[k].min(v.pos[k]);
+                            vmax[k] = vmax[k].max(v.pos[k]);
+                        }
+                    }
+                    println!("  Trigger volume '{}': AABB ({:.2},{:.2},{:.2})-({:.2},{:.2},{:.2})",
+                        wm.world_name, vmin[0], vmin[1], vmin[2], vmax[0], vmax[1], vmax[2]);
+                    trigger_volumes.push((wm.world_name.clone(), vmin, vmax));
+                }
             }
         }
         println!("=== Sub-world models rendered: {} world models processed ===", dat_file.world_models.len() - 1);
@@ -816,15 +884,248 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
         });
 
     // Build the interactive game object manager from placed ABC objects and BSP sub-models.
-    let game_objects = GameObjectManager::extract_from_dat(
+    let mut game_objects = GameObjectManager::extract_from_dat(
         &dat_file.objects,
         &placed_abc_objects,
         first_abc_draw_group,
         &bsp_submodels,
         &torch_flames,
         &sky_model_infos,
+        &trigger_volumes,
+        &door_collision_ranges,
+        &collision_positions,
         scale,
     );
+
+    // Load SCR scripts from the matching MAPDATA directory.
+    // DAT path: REZ/WORLDS/REALM1/R1M1A.DAT
+    // SCR dir:  REZ/MAPDATA/REALM1/R1M1/R1M1A/
+    {
+        use crate::scripted_sequence;
+        let dat_path = path.as_ref();
+        let file_stem = dat_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let realm_dir = dat_path.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()).unwrap_or("");
+        // Map group is first 4 chars of filename stem, e.g. R1M1A → R1M1
+        let map_group = if file_stem.len() >= 4 { &file_stem[..4] } else { file_stem };
+        let scr_dir = format!("REZ/MAPDATA/{}/{}/{}", realm_dir, map_group, file_stem);
+        println!("=== SCR directory: {} ===", scr_dir);
+
+        // Debug: dump script/trigger/switch DAT objects to file
+        {
+            use std::io::Write;
+            let mut dbg = std::fs::File::create("debug_dat_objects.txt").unwrap();
+            for obj in &dat_file.objects {
+                let tn = obj.type_name.to_lowercase();
+                if tn.contains("script") || tn.contains("sequence") || tn.contains("trigger")
+                    || tn.contains("volume") || tn.contains("switch") || tn.contains("slime")
+                    || tn.contains("lava")
+                {
+                    writeln!(dbg, "=== DAT Object: type='{}' ===", obj.type_name).ok();
+                    for prop in &obj.properties {
+                        writeln!(dbg, "  {} = {:?}", prop.name, prop.value).ok();
+                    }
+                    writeln!(dbg).ok();
+                }
+            }
+            // Also dump all trigger volumes
+            writeln!(dbg, "\n=== TRIGGER VOLUMES ===").ok();
+            for (name, vmin, vmax) in &trigger_volumes {
+                writeln!(dbg, "  '{}': ({:.2},{:.2},{:.2})-({:.2},{:.2},{:.2})",
+                    name, vmin[0], vmin[1], vmin[2], vmax[0], vmax[1], vmax[2]).ok();
+            }
+            // Also dump BSP sub-models
+            writeln!(dbg, "\n=== BSP SUB-MODELS ===").ok();
+            for (name, pivot, dgs, zh) in &bsp_submodels {
+                writeln!(dbg, "  '{}': pivot=({:.2},{:.2},{:.2}) z_height={:.2} dgs={:?}",
+                    name, pivot[0], pivot[1], pivot[2], zh, dgs).ok();
+            }
+        }
+
+        if let Ok(entries) = std::fs::read_dir(&scr_dir) {
+            for entry in entries.flatten() {
+                let fname = entry.file_name();
+                let fname_str = fname.to_string_lossy();
+                if !fname_str.to_uppercase().ends_with(".SCR") {
+                    continue;
+                }
+                // Derive trigger name: strip map prefix and extension.
+                // R1M1A_BIGDOOR.SCR → BIGDOOR → "bigdoor"
+                let stem = &fname_str[..fname_str.len() - 4]; // strip .SCR
+                let prefix = format!("{}_", file_stem);
+                let trigger_name = if stem.to_uppercase().starts_with(&prefix.to_uppercase()) {
+                    stem[prefix.len()..].to_lowercase()
+                } else {
+                    stem.to_lowercase()
+                };
+
+                if let Ok(contents) = std::fs::read_to_string(entry.path()) {
+                    let commands = scripted_sequence::parse_scr(&contents);
+                    println!("  Loaded SCR '{}' → trigger='{}' ({} commands)",
+                        fname_str, trigger_name, commands.len());
+                    game_objects.scripts.push((
+                        trigger_name,
+                        scripted_sequence::ScriptRunner::new(commands),
+                    ));
+                }
+            }
+        }
+        // Build CScriptObject lookup: name → list of SCR trigger names
+        // CScriptObjects have command properties like "0 scriptplay mapdata\...\r1m1a_bigdoor.scr"
+        use std::collections::HashMap;
+        let mut script_object_scr: HashMap<String, Vec<String>> = HashMap::new();
+        for obj in &dat_file.objects {
+            if obj.type_name == "CScriptObject" {
+                let obj_name = match obj.get_property("Name") {
+                    Some(PropertyValue::String(s)) => s.to_lowercase(),
+                    _ => continue,
+                };
+                let mut scr_names = Vec::new();
+                for i in 1..=8 {
+                    let cmd_key = format!("command{}", i);
+                    if let Some(PropertyValue::String(cmd)) = obj.get_property(&cmd_key) {
+                        // Parse: "0 scriptplay mapdata\realm1\r1m1\r1m1a\r1m1a_bigdoor.scr"
+                        let parts: Vec<&str> = cmd.split_whitespace().collect();
+                        if parts.len() >= 3 && parts[1] == "scriptplay" {
+                            let scr_path = parts[2].replace('\\', "/").to_lowercase();
+                            // Extract trigger name: last component, strip map prefix + .scr
+                            if let Some(filename) = scr_path.rsplit('/').next() {
+                                let stem = filename.strip_suffix(".scr").unwrap_or(filename);
+                                let scr_prefix = format!("{}_", file_stem.to_lowercase());
+                                let trigger = if stem.starts_with(&scr_prefix) {
+                                    stem[scr_prefix.len()..].to_string()
+                                } else {
+                                    stem.to_string()
+                                };
+                                println!("  CScriptObject '{}' → scriptplay → trigger='{}'", obj_name, trigger);
+                                scr_names.push(trigger);
+                            }
+                        }
+                    }
+                }
+                if !scr_names.is_empty() {
+                    script_object_scr.insert(obj_name, scr_names);
+                }
+            }
+        }
+
+        // Register BSP switches: parse their commands to find script_object_play targets,
+        // then resolve through CScriptObject chain to find ultimate SCR trigger names.
+        for (name, pivot, dgs, _zh) in &bsp_submodels {
+            let nl = name.to_lowercase();
+            if nl.starts_with("cswitchslide") || nl.starts_with("cswitchrotating") {
+                // Find matching DAT object by Name property
+                let dat_obj = dat_file.objects.iter().find(|o|
+                    (o.type_name == "CSwitchSlide" || o.type_name == "CSwitchRotating")
+                    && matches!(o.get_property("Name"), Some(PropertyValue::String(n)) if n.to_lowercase() == nl)
+                );
+                let mut script_targets = Vec::new();
+                if let Some(obj) = dat_obj {
+                    for i in 1..=4 {
+                        let cmd_key = format!("command{}", i);
+                        if let Some(PropertyValue::String(cmd)) = obj.get_property(&cmd_key) {
+                            let parts: Vec<&str> = cmd.split_whitespace().collect();
+                            if parts.len() >= 3 && parts[1] == "script_object_play" {
+                                let target_name = parts[2].to_lowercase();
+                                // Resolve through CScriptObject chain
+                                if let Some(scr_names) = script_object_scr.get(&target_name) {
+                                    script_targets.extend(scr_names.clone());
+                                    println!("  BSP switch '{}' → script_object '{}' → scripts: {:?}",
+                                        name, target_name, scr_names);
+                                }
+                            }
+                        }
+                    }
+                }
+                if !script_targets.is_empty() {
+                    game_objects.bsp_switches.push(
+                        crate::game_objects::BspSwitch {
+                            name: nl,
+                            center: *pivot,
+                            script_targets,
+                            activated: false,
+                            draw_groups: dgs.clone(),
+                        }
+                    );
+                }
+            }
+        }
+
+        // Also connect trigger volumes to CScriptObjects via command matching.
+        // Some trigger volumes (CTriggerCommand) have scriptplay commands directly.
+        for trigger in &mut game_objects.script_triggers {
+            // Check if there's a CTriggerCommand DAT object matching this trigger volume
+            let dat_obj = dat_file.objects.iter().find(|o| {
+                matches!(o.get_property("Name"), Some(PropertyValue::String(n)) if n.to_lowercase() == trigger.name)
+            });
+            if let Some(obj) = dat_obj {
+                for i in 1..=4 {
+                    let cmd_key = format!("command{}", i);
+                    if let Some(PropertyValue::String(cmd)) = obj.get_property(&cmd_key) {
+                        let parts: Vec<&str> = cmd.split_whitespace().collect();
+                        if parts.len() >= 3 {
+                            if parts[1] == "scriptplay" {
+                                let scr_path = parts[2].replace('\\', "/").to_lowercase();
+                                if let Some(filename) = scr_path.rsplit('/').next() {
+                                    let stem = filename.strip_suffix(".scr").unwrap_or(filename);
+                                    let scr_prefix = format!("{}_", file_stem.to_lowercase());
+                                    let scr_trigger = if stem.starts_with(&scr_prefix) {
+                                        stem[scr_prefix.len()..].to_string()
+                                    } else {
+                                        stem.to_string()
+                                    };
+                                    // Store the resolved script name in the trigger's name for matching
+                                    println!("  Trigger volume '{}' → scriptplay → '{}'", trigger.name, scr_trigger);
+                                    trigger.name = scr_trigger;
+                                }
+                            } else if parts[1] == "script_object_play" {
+                                let target = parts[2].to_lowercase();
+                                if let Some(scr_names) = script_object_scr.get(&target) {
+                                    if let Some(first) = scr_names.first() {
+                                        println!("  Trigger volume → script_object '{}' → '{}'", target, first);
+                                        trigger.name = first.clone();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // CSlime2 is a damage volume the original game uses as a physical
+        // presence indicator for the microphone stage area.  The user wants
+        // it to act as an E-key trigger that starts the microphone script.
+        for trigger in &mut game_objects.script_triggers {
+            if trigger.name == "cslime2" {
+                trigger.name = "microphone".to_string();
+            }
+        }
+
+        println!("=== Loaded {} scripts, {} BSP doors, {} BSP switches ===",
+            game_objects.scripts.len(), game_objects.bsp_doors.len(), game_objects.bsp_switches.len());
+
+        // Append resolved state to debug file
+        {
+            use std::fs::OpenOptions;
+            use std::io::Write;
+            if let Ok(mut dbg) = OpenOptions::new().append(true).open("debug_dat_objects.txt") {
+                writeln!(dbg, "\n=== LOADED SCRIPTS ===").ok();
+                for (name, runner) in &game_objects.scripts {
+                    writeln!(dbg, "  trigger='{}' ({} commands)", name, runner.commands.len()).ok();
+                }
+                writeln!(dbg, "\n=== BSP SWITCHES ===").ok();
+                for sw in &game_objects.bsp_switches {
+                    writeln!(dbg, "  '{}' center=({:.2},{:.2},{:.2}) scripts={:?}",
+                        sw.name, sw.center[0], sw.center[1], sw.center[2], sw.script_targets).ok();
+                }
+                writeln!(dbg, "\n=== SCRIPT TRIGGERS (resolved) ===").ok();
+                for t in &game_objects.script_triggers {
+                    writeln!(dbg, "  '{}' AABB=({:.2},{:.2},{:.2})-({:.2},{:.2},{:.2})",
+                        t.name, t.min[0], t.min[1], t.min[2], t.max[0], t.max[1], t.max[2]).ok();
+                }
+            }
+        }
+    }
 
     // Build entity cylinders for solid objects (barrels, headless enemies).
     // Cylinders match the model shape better than AABBs and produce smooth
@@ -866,6 +1167,7 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
         game_objects,
         fog: level_fog,
         entity_cylinders,
+        trigger_draw_groups,
     })
 }
 
