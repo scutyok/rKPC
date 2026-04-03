@@ -48,7 +48,7 @@ It started as a [DLL injection project/D3D9 hook](http://https://github.com/scut
 | S             | Move backwards         |
 | A             | Strafe left            |
 | D             | Strafe right           |
-| Space         | Ascend                 |
+| Space         | Ascend/Jump            |
 | Shift         | Descend                |
 | F1            | Open Debug menu        |
 | ESC           | Unlock the cursor      |
