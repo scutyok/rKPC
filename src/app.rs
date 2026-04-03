@@ -25,7 +25,9 @@ use rustKPC::collision;
 use rustKPC::egui_renderer;
 use rustKPC::game_objects::GameObjectManager;
 use rustKPC::lights;
+use rustKPC::lighting_ubo;
 use rustKPC::occlusion_culling;
+use rustKPC::player_movement::{self, MovementState};
 use rustKPC::camera::{Camera, InputState};
 use rustKPC::types::*;
 use rustKPC::vulkan;
@@ -44,15 +46,15 @@ pub struct App {
     pub models: usize,
     pub camera: Camera,
     pub input: InputState,
-    pub on_ground: bool,
+    pub move_state: MovementState,
     pub world_chooser: WorldChooser,
     pub current_world: String,
     pub loading_state: LoadingState,
+    pub loading_texture_id: Option<egui::TextureId>,
     pub player_mode: collision::PlayerMode,
     pub height_provider: Box<dyn collision::HeightProvider>,
     pub mesh_provider: Option<collision::MeshHeightProvider>,
     // Physics
-    pub z_vel: f32,
     pub is_free_cam: bool,
     pub show_fps: bool,
     pub vsync: bool,
@@ -172,25 +174,25 @@ impl App {
             models: 1,
             camera: Camera::default(),
             input: InputState::default(),
+            move_state: MovementState::default(),
             world_chooser: WorldChooser::new(),
             current_world: initial_world,
             loading_state: LoadingState::Ready,
+            loading_texture_id: None,
             player_mode: collision::PlayerMode::Walk,
             height_provider: initial_height_provider,
             mesh_provider: initial_mesh_provider,
-            z_vel: 0.0,
             is_free_cam: false,
             show_fps: true,
             vsync: true,
             freeze_culling: true,
             saved_player_camera: None,
-            eye_offset_walk: 0.4,
+            eye_offset_walk: 0.32,
             player_fov: 60.0,
             fps: 0.0,
-            on_ground: false,
             occlusion_culler: initial_occlusion_culler,
             world_lights: initial_lights.clone(),
-            cached_light_ubo: Self::build_light_ubo(&initial_lights, fog_color, fog_near, fog_far, fog_enabled, sky_fog_far),
+            cached_light_ubo: lighting_ubo::build_light_ubo(&initial_lights, &[], fog_color, fog_near, fog_far, fog_enabled, sky_fog_far),
             game_objects: initial_game_objects,
             entity_cylinders: initial_entity_cylinders,
             elapsed_time: 0.0,
@@ -216,36 +218,18 @@ impl App {
         Ok(app)
     }
 
-    /// Build a LightingUBO from a list of lights and current fog settings.
+    /// Build a LightingUBO from a list of lights, shadow casters, and current fog settings.
+    /// Delegates to `lighting_ubo::build_light_ubo`.
     fn build_light_ubo(
         world_lights: &[lights::Light],
+        shadow_positions: &[[f32; 3]],
         fog_color: [f32; 3],
         fog_near: f32,
         fog_far: f32,
         fog_enabled: bool,
         sky_fog_far: f32,
     ) -> LightingUBO {
-        let mut ubo = LightingUBO::default();
-        let count = world_lights.len().min(MAX_LIGHTS);
-        ubo.light_count = count as u32;
-        ubo.ambient = [0.4, 0.4, 0.4, 0.0];
-        ubo.fog_color = [fog_color[0], fog_color[1], fog_color[2], 0.0];
-        ubo.fog_params = [fog_near, fog_far, if fog_enabled { 1.0 } else { 0.0 }, sky_fog_far];
-
-        for (i, l) in world_lights.iter().take(count).enumerate() {
-            let r_sq = l.radius * l.radius;
-            let inv_r = if l.radius > 0.0 { 1.0 / l.radius } else { 0.0 };
-            ubo.lights[i] = GpuLight {
-                position_radius_sq: [l.position[0], l.position[1], l.position[2], r_sq],
-                color_intensity: [
-                    l.color[0] * l.intensity,
-                    l.color[1] * l.intensity,
-                    l.color[2] * l.intensity,
-                    inv_r,
-                ],
-            };
-        }
-        ubo
+        lighting_ubo::build_light_ubo(world_lights, shadow_positions, fog_color, fog_near, fog_far, fog_enabled, sky_fog_far)
     }
 
     /// Upload the full cached light UBO to all swapchain images' persistently mapped memory.
@@ -634,156 +618,199 @@ impl App {
         Ok(command_buffer)
     }
 
-    /// Updates camera position based on input state
+    /// Updates camera position based on input state using Quake/Blood2-style
+    /// acceleration physics (ground friction, air-strafe, etc.).
     pub fn update_camera(&mut self, dt: f32) {
-        let speed = if self.player_mode == collision::PlayerMode::Flying {
-            FLY_SPEED * dt
-        } else {
-            WALK_SPEED * dt
-        };
-        let front_flat = {
-            let f = self.camera.front();
-            vec3(f.x, f.y, 0.0).normalize()
-        };
+        let front = self.camera.front();
         let right = self.camera.right();
         let prev_pos = self.camera.position;
 
-        self.on_ground = false;
-        if self.input.forward {
-            self.camera.position = self.camera.position + front_flat * speed;
-        }
-        if self.input.backward {
-            self.camera.position = self.camera.position - front_flat * speed;
-        }
-        if self.input.left {
-            self.camera.position = self.camera.position - right * speed;
-        }
-        if self.input.right {
-            self.camera.position = self.camera.position + right * speed;
-        }
         if self.player_mode == collision::PlayerMode::Flying {
-            if self.input.up {
-                self.camera.position.z += speed;
-            }
-            if self.input.down {
-                self.camera.position.z -= speed;
-            }
-            self.z_vel = 0.0;
-        } else {
-            const GRAVITY: f32 = 9.8 * 3.0;
-            self.z_vel -= GRAVITY * dt;
-            self.z_vel = self.z_vel.max(-8.0);
-            if self.input.up && self.on_ground {
-                self.z_vel = 7.5;
-                self.input.up = false;
-                self.on_ground = false;
-            }
-            self.camera.position.z += self.z_vel * dt;
+            // Noclip / fly mode — direct velocity, no physics
+            let delta = player_movement::fly_tick(
+                self.input.forward,
+                self.input.backward,
+                self.input.left,
+                self.input.right,
+                self.input.up,
+                self.input.down,
+                [front.x, front.y, front.z],
+                [right.x, right.y, right.z],
+                dt,
+            );
+            self.camera.position.x += delta[0];
+            self.camera.position.y += delta[1];
+            self.camera.position.z += delta[2];
+            self.move_state.velocity = [0.0, 0.0];
+            self.move_state.z_vel = 0.0;
+            return;
         }
 
-        if self.player_mode == collision::PlayerMode::Walk {
-            if let Some(mesh) = &self.mesh_provider {
-                mesh.resolve_player_movement(prev_pos, &mut self.camera.position, 0.25);
+        // ── Walk mode: acceleration-based physics ────────────────────────
+        let front_flat = {
+            let len = (front.x * front.x + front.y * front.y).sqrt();
+            if len > 1e-6 {
+                [front.x / len, front.y / len]
+            } else {
+                [1.0, 0.0]
             }
+        };
 
-            // Push player out of entity cylinders (barrels, headless enemies).
-            // Radial pushback in XY produces smooth sliding along curved surfaces.
-            let player_radius = 0.25_f32;
-            for cyl in &self.entity_cylinders {
-                // Vertical overlap check (player feet to head)
-                let player_z_min = self.camera.position.z - 0.5;
-                let player_z_max = self.camera.position.z + 0.5;
-                if player_z_max < cyl.z_min || player_z_min > cyl.z_max {
-                    continue;
-                }
-                let dx = self.camera.position.x - cyl.center_x;
-                let dy = self.camera.position.y - cyl.center_y;
-                let dist = (dx * dx + dy * dy).sqrt();
-                let min_dist = cyl.radius + player_radius;
-                if dist < min_dist && dist > 1e-6 {
-                    // Push out radially by exactly the penetration amount.
-                    let penetration = min_dist - dist;
-                    let nx = dx / dist;
-                    let ny = dy / dist;
-                    self.camera.position.x += nx * penetration;
-                    self.camera.position.y += ny * penetration;
-                }
+        let input = player_movement::build_move_input(
+            self.input.forward,
+            self.input.backward,
+            self.input.left,
+            self.input.right,
+            self.input.up, // Space = jump
+            front_flat,
+            [right.x, right.y],
+        );
+
+        let delta = player_movement::tick(&mut self.move_state, &input, dt);
+
+        self.camera.position.x += delta[0];
+        self.camera.position.y += delta[1];
+        self.camera.position.z += delta[2];
+
+        // ── Collision resolution ──────────────────────────────────────
+        const PLAYER_RADIUS: f32 = 0.20;
+        const PLAYER_HALF_H: f32 = 0.35;
+
+        if let Some(mesh) = &self.mesh_provider {
+            mesh.resolve_player_movement(prev_pos, &mut self.camera.position, PLAYER_RADIUS);
+        }
+
+        // Push player out of entity cylinders (barrels, headless enemies).
+        for cyl in &self.entity_cylinders {
+            let player_z_min = self.camera.position.z - PLAYER_HALF_H;
+            let player_z_max = self.camera.position.z + PLAYER_HALF_H;
+            if player_z_max < cyl.z_min || player_z_min > cyl.z_max {
+                continue;
             }
+            let dx = self.camera.position.x - cyl.center_x;
+            let dy = self.camera.position.y - cyl.center_y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let min_dist = cyl.radius + PLAYER_RADIUS;
+            if dist < min_dist && dist > 1e-6 {
+                let penetration = min_dist - dist;
+                let nx = dx / dist;
+                let ny = dy / dist;
+                self.camera.position.x += nx * penetration;
+                self.camera.position.y += ny * penetration;
+            }
+        }
 
-            // Push player out of door AABBs (sliding doors block when not fully open).
-            {
-                let pr = 0.25_f32; // player radius
-                let pz_min = self.camera.position.z - 0.5;
-                let pz_max = self.camera.position.z + 0.5;
-                for (amin, amax) in self.game_objects.door_aabbs() {
-                    // Expand AABB by player radius for minkowski-sum collision.
-                    let ex_min = [amin[0] - pr, amin[1] - pr, amin[2]];
-                    let ex_max = [amax[0] + pr, amax[1] + pr, amax[2]];
-                    let px = self.camera.position.x;
-                    let py = self.camera.position.y;
-                    if px > ex_min[0] && px < ex_max[0]
-                        && py > ex_min[1] && py < ex_max[1]
-                        && pz_max > ex_min[2] && pz_min < ex_max[2]
-                    {
-                        // Find smallest pushback axis.
-                        let push_xn = px - ex_min[0];
-                        let push_xp = ex_max[0] - px;
-                        let push_yn = py - ex_min[1];
-                        let push_yp = ex_max[1] - py;
-                        let min_push = push_xn.min(push_xp).min(push_yn).min(push_yp);
-                        if min_push == push_xn {
-                            self.camera.position.x = ex_min[0];
-                        } else if min_push == push_xp {
-                            self.camera.position.x = ex_max[0];
-                        } else if min_push == push_yn {
-                            self.camera.position.y = ex_min[1];
-                        } else {
-                            self.camera.position.y = ex_max[1];
-                        }
+        // Push player out of door AABBs
+        {
+            let pr = PLAYER_RADIUS;
+            let pz_min = self.camera.position.z - PLAYER_HALF_H;
+            let pz_max = self.camera.position.z + PLAYER_HALF_H;
+            for (amin, amax) in self.game_objects.door_aabbs() {
+                let ex_min = [amin[0] - pr, amin[1] - pr, amin[2]];
+                let ex_max = [amax[0] + pr, amax[1] + pr, amax[2]];
+                let px = self.camera.position.x;
+                let py = self.camera.position.y;
+                if px > ex_min[0] && px < ex_max[0]
+                    && py > ex_min[1] && py < ex_max[1]
+                    && pz_max > ex_min[2] && pz_min < ex_max[2]
+                {
+                    let push_xn = px - ex_min[0];
+                    let push_xp = ex_max[0] - px;
+                    let push_yn = py - ex_min[1];
+                    let push_yp = ex_max[1] - py;
+                    let min_push = push_xn.min(push_xp).min(push_yn).min(push_yp);
+                    if min_push == push_xn {
+                        self.camera.position.x = ex_min[0];
+                    } else if min_push == push_xp {
+                        self.camera.position.x = ex_max[0];
+                    } else if min_push == push_yn {
+                        self.camera.position.y = ex_min[1];
+                    } else {
+                        self.camera.position.y = ex_max[1];
                     }
                 }
             }
+        }
 
-            let _before_z = self.camera.position.z;
-            collision::resolve_player_collision(
-                &mut self.camera.position,
-                self.height_provider.as_ref(),
-                0.25,
-                0.5,
-            );
-            let ground_z_cur = self.height_provider.ground_height(
-                self.camera.position.x,
-                self.camera.position.y,
-                Some(self.camera.position.z),
-            );
-            let ground_z_prev = self.height_provider.ground_height(
-                self.camera.position.x,
-                self.camera.position.y,
-                Some(prev_pos.z),
-            );
-            let ground_z = if prev_pos.z >= ground_z_prev + 0.5 - 0.05
-                && self.camera.position.z < ground_z_prev + 0.5
-            {
-                ground_z_prev.max(ground_z_cur)
-            } else {
-                ground_z_cur
-            };
-            let min_z = ground_z + 0.5;
-            if self.camera.position.z < min_z {
-                let diff = min_z - self.camera.position.z;
-                if diff <= 0.5 {
-                    self.camera.position.z = min_z;
-                } else {
-                    self.camera.position.z += 0.3;
-                }
-                if self.z_vel < 0.0 {
-                    self.z_vel = 0.0;
-                }
-                self.on_ground = true;
-            } else if self.camera.position.z < min_z + 0.15 && self.z_vel <= 0.0 {
+        // ── Ground detection & Z resolution ──────────────────────────────
+        let _before_z = self.camera.position.z;
+        collision::resolve_player_collision(
+            &mut self.camera.position,
+            self.height_provider.as_ref(),
+            PLAYER_HALF_H,
+            PLAYER_HALF_H,
+        );
+        let ground_z_cur = self.height_provider.ground_height(
+            self.camera.position.x,
+            self.camera.position.y,
+            Some(self.camera.position.z),
+        );
+        let ground_z_prev = self.height_provider.ground_height(
+            self.camera.position.x,
+            self.camera.position.y,
+            Some(prev_pos.z),
+        );
+        let ground_z = if prev_pos.z >= ground_z_prev + PLAYER_HALF_H - 0.05
+            && self.camera.position.z < ground_z_prev + PLAYER_HALF_H
+        {
+            ground_z_prev.max(ground_z_cur)
+        } else {
+            ground_z_cur
+        };
+        let min_z = ground_z + PLAYER_HALF_H;
+
+        // Reset on_ground for this frame
+        self.move_state.on_ground = false;
+
+        if self.camera.position.z < min_z {
+            let diff = min_z - self.camera.position.z;
+            if diff <= PLAYER_HALF_H {
                 self.camera.position.z = min_z;
-                self.z_vel = 0.0;
-                self.on_ground = true;
+                if self.move_state.z_vel < 0.0 {
+                    self.move_state.z_vel = 0.0;
+                }
+                self.move_state.on_ground = true;
+            }
+            // Large diffs are ignored — ground_height found an upper surface,
+            // not the floor we're standing on.
+        } else if self.camera.position.z < min_z + 0.15 && self.move_state.z_vel <= 0.0 {
+            self.camera.position.z = min_z;
+            self.move_state.z_vel = 0.0;
+            self.move_state.on_ground = true;
+        }
+
+        // ── Ceiling check (headroom) — runs AFTER ground so we never ────
+        //    push the player below the floor they're standing on.
+        let head_z = self.camera.position.z + PLAYER_HALF_H;
+        let ceiling_z = self.height_provider.ceiling_height(
+            self.camera.position.x,
+            self.camera.position.y,
+            head_z,
+        );
+        if ceiling_z < f32::MAX {
+            let max_center_z = ceiling_z - PLAYER_HALF_H;
+            // Only clamp if ceiling is actually reachable (above ground)
+            if max_center_z >= min_z && self.camera.position.z > max_center_z {
+                self.camera.position.z = max_center_z;
+                if self.move_state.z_vel > 0.0 {
+                    self.move_state.z_vel = 0.0;
+                }
+            }
+        }
+
+        // If we hit a wall and XY position was corrected, clamp velocity to
+        // prevent sliding along blocked axes (wall-hugging).
+        let actual_dx = self.camera.position.x - prev_pos.x;
+        let actual_dy = self.camera.position.y - prev_pos.y;
+        if dt > 0.0 {
+            let intended_dx = delta[0];
+            let intended_dy = delta[1];
+            // If collision killed most of the motion on an axis, zero velocity there
+            if intended_dx.abs() > 1e-6 && (actual_dx / intended_dx) < 0.1 {
+                self.move_state.velocity[0] = 0.0;
+            }
+            if intended_dy.abs() > 1e-6 && (actual_dy / intended_dy) < 0.1 {
+                self.move_state.velocity[1] = 0.0;
             }
         }
     }
@@ -803,13 +830,14 @@ impl App {
             self.game_objects.update_door_collision(&mut mesh.positions);
         }
 
-        // If there are dynamic lights (explosions, torches) this frame, rebuild the UBO
+        // Rebuild the UBO every frame with dynamic lights + shadow casters
         let dynamic = self.game_objects.dynamic_lights(self.elapsed_time);
-        if !dynamic.is_empty() {
+        let shadow_positions = self.game_objects.shadow_caster_positions();
+        {
             let mut all_lights = self.world_lights.clone();
             all_lights.extend(dynamic);
             let combined_ubo = Self::build_light_ubo(
-                &all_lights, self.fog_color, self.fog_near, self.fog_far, self.fog_enabled, self.sky_fog_far);
+                &all_lights, &shadow_positions, self.fog_color, self.fog_near, self.fog_far, self.fog_enabled, self.sky_fog_far);
             for mapped in &self.data.light_uniform_buffers_mapped {
                 memcpy(&combined_ubo, (*mapped).cast(), 1);
             }
@@ -844,22 +872,30 @@ impl App {
             egui::CentralPanel::default()
                 .frame(egui::Frame::none().fill(egui::Color32::from_rgb(20, 20, 30)))
                 .show(ctx, |ui| {
-                    ui.centered_and_justified(|ui| {
-                        ui.vertical_centered(|ui| {
-                            ui.add_space(ui.available_height() / 2.0 - 40.0);
-                            ui.heading(
-                                egui::RichText::new("Loading...")
-                                    .size(32.0)
-                                    .color(egui::Color32::WHITE),
-                            );
-                            ui.add_space(10.0);
-                            ui.label(
-                                egui::RichText::new(map_name)
-                                    .size(24.0)
-                                    .color(egui::Color32::LIGHT_GRAY),
-                            );
+                    if let Some(tex_id) = self.loading_texture_id {
+                        let available = ui.available_size();
+                        ui.add(egui::Image::new(egui::load::SizedTexture::new(
+                            tex_id,
+                            available,
+                        )));
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(ui.available_height() / 2.0 - 40.0);
+                                ui.heading(
+                                    egui::RichText::new("Loading...")
+                                        .size(32.0)
+                                        .color(egui::Color32::WHITE),
+                                );
+                                ui.add_space(10.0);
+                                ui.label(
+                                    egui::RichText::new(map_name)
+                                        .size(24.0)
+                                        .color(egui::Color32::LIGHT_GRAY),
+                                );
+                            });
                         });
-                    });
+                    }
                 });
             return;
         }
@@ -1009,17 +1045,18 @@ impl App {
                                     collision::PlayerMode::Walk
                                 };
                                 if !self.is_free_cam {
-                                    self.z_vel = 0.0;
+                                    self.move_state.z_vel = 0.0;
+                                    self.move_state.velocity = [0.0, 0.0];
                                     let gz = self.height_provider.ground_height(
                                         self.camera.position.x,
                                         self.camera.position.y,
                                         Some(self.camera.position.z),
                                     );
-                                    let min_z = gz + 0.5;
+                                    let min_z = gz + 0.35;
                                     if self.camera.position.z < min_z {
                                         self.camera.position.z = min_z;
                                     }
-                                    self.on_ground = true;
+                                    self.move_state.on_ground = true;
                                 }
                             }
                         }
@@ -1094,8 +1131,9 @@ impl App {
                     if fog_changed {
                         // Rebuild and upload the lighting UBO immediately so the change is
                         // visible next frame without waiting for a dynamic-light tick.
+                        let shadow_pos = self.game_objects.shadow_caster_positions();
                         self.cached_light_ubo = Self::build_light_ubo(
-                            &self.world_lights, self.fog_color, self.fog_near, self.fog_far, self.fog_enabled, self.sky_fog_far);
+                            &self.world_lights, &shadow_pos, self.fog_color, self.fog_near, self.fog_far, self.fog_enabled, self.sky_fog_far);
                         unsafe { self.upload_light_ubo_to_all(); }
                     }
 
@@ -1248,8 +1286,9 @@ impl App {
             self.fog_color = fog.color;
             self.sky_fog_far = fog.sky_fog_far;
         }
+        let shadow_pos = self.game_objects.shadow_caster_positions();
         self.cached_light_ubo = Self::build_light_ubo(
-            &self.world_lights, self.fog_color, self.fog_near, self.fog_far, self.fog_enabled, self.sky_fog_far);
+            &self.world_lights, &shadow_pos, self.fog_color, self.fog_near, self.fog_far, self.fog_enabled, self.sky_fog_far);
         self.upload_light_ubo_to_all();
 
         // Install mesh-backed height provider (uses collision mesh which includes invisible surfaces)

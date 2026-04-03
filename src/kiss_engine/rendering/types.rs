@@ -24,6 +24,9 @@ pub const FLY_SPEED: f32 = 10.0;
 pub const MOUSE_SENSITIVITY: f32 = 0.1;
 pub const MAX_LIGHTS: usize = 128;
 
+// Re-export shadow constants and types from the shadows module
+pub use crate::shadows::{GpuShadowCaster, MAX_SHADOW_CASTERS};
+
 // Error types
 #[derive(Debug, Error)]
 #[error("{0}")]
@@ -134,13 +137,16 @@ pub struct LightingUBO {
     pub light_count: u32,
     pub _pad: [u32; 3],
     pub lights: [GpuLight; MAX_LIGHTS],
+    pub shadow_count: u32,
+    pub _pad2: [u32; 3],
+    pub shadow_casters: [GpuShadowCaster; MAX_SHADOW_CASTERS],
 }
 
 impl Default for LightingUBO {
     fn default() -> Self {
         Self {
             camera_pos: [0.0; 4],
-            ambient: [0.4, 0.4, 0.4, 0.0],
+            ambient: [0.15, 0.15, 0.15, 0.0],
             fog_color: [0.05, 0.05, 0.08, 0.0],
             fog_params: [5.0, 22.0, 1.0, 0.0],
             light_count: 0,
@@ -149,6 +155,11 @@ impl Default for LightingUBO {
                 position_radius_sq: [0.0; 4],
                 color_intensity: [0.0; 4],
             }; MAX_LIGHTS],
+            shadow_count: 0,
+            _pad2: [0; 3],
+            shadow_casters: [GpuShadowCaster {
+                position_radius: [0.0; 4],
+            }; MAX_SHADOW_CASTERS],
         }
     }
 }
@@ -234,6 +245,8 @@ pub struct AppData {
     pub sky_translation: [f32; 3],
     /// Center of the main world model bounding box (in renderer coords)
     pub map_center: [f32; 3],
+    /// Preferred texture subfolder derived from current DAT path (e.g. "R2M1")
+    pub texture_prefix: String,
     // Model
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,

@@ -75,7 +75,7 @@ pub fn extract_lights_from_objects(objects: &[WorldObject], scale: f32) -> Vec<L
             ],
             radius: radius * scale,
             color: [r, g, b],
-            intensity: bright_scale * 1.3,
+            intensity: bright_scale * 0.5,
         });
     }
 

@@ -23,6 +23,7 @@ use vulkanalia::prelude::v1_0::*;
 
 use rustKPC::collision;
 use rustKPC::egui_renderer;
+use rustKPC::pcx;
 use rustKPC::types::*;
 use rustKPC::world_chooser::{LoadingState, WorldChooser};
 
@@ -128,6 +129,30 @@ fn main() -> Result<()> {
                         let map_name = WorldChooser::get_world_display_name(&world_path);
                         app.loading_state = LoadingState::Loading(map_name.clone());
                         window.set_title(&format!("Loading: {}...", map_name));
+
+                        // Try to load a level-specific loading screen image
+                        {
+                            let stem = std::path::Path::new(&world_path)
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("")
+                                .to_uppercase();
+                            // Strip trailing alpha to get e.g. "R2M1" from "R2M1A"
+                            let level_key = stem.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+                            let pcx_path = format!("REZ/SCREENS/LOADINGBACKGROUNDS/{}.PCX", level_key);
+                            if let Ok(img) = pcx::load_pcx(std::path::Path::new(&pcx_path)) {
+                                match unsafe {
+                                    egui_renderer.set_user_texture(
+                                        &app.instance, &app.device, app.data.physical_device,
+                                        app.data.command_pool, app.data.graphics_queue,
+                                        &img.pixels, img.width, img.height,
+                                    )
+                                } {
+                                    Ok(tex_id) => { app.loading_texture_id = Some(tex_id); }
+                                    Err(e) => { warn!("Failed to set loading texture: {}", e); }
+                                }
+                            }
+                        }
                         
                         // Run egui for loading screen
                         let raw_input = egui_state.take_egui_input(&window);
@@ -145,6 +170,8 @@ fn main() -> Result<()> {
                             error!("Failed to load world {}: {}", world_path, e);
                         }
                         app.loading_state = LoadingState::Ready;
+                        app.loading_texture_id = None;
+                        unsafe { egui_renderer.clear_user_texture(&app.device); }
                         window.set_title("KISS Psycho Circus: The Nightmare Child [F1: World Select]");
                     }
                     

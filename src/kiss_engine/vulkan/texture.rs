@@ -95,6 +95,7 @@ pub fn create_colored_texture(width: u32, height: u32, r: u8, g: u8, b: u8) -> L
 pub fn find_texture_file(
     textures_root: &std::path::Path,
     texture_name: &str,
+    preferred_subfolder: Option<&str>,
 ) -> Option<std::path::PathBuf> {
     let clean_name = texture_name.replace(['\\', '/'], "").to_uppercase();
 
@@ -103,6 +104,16 @@ pub fn find_texture_file(
     } else {
         format!("{}.DTX", clean_name)
     };
+
+    // Try preferred subfolder first (realm-specific)
+    if let Some(subfolder) = preferred_subfolder {
+        if !subfolder.is_empty() {
+            let preferred_path = textures_root.join(subfolder).join(&dtx_name);
+            if preferred_path.exists() {
+                return Some(preferred_path);
+            }
+        }
+    }
 
     fn search_recursive(dir: &std::path::Path, target: &str) -> Option<std::path::PathBuf> {
         if let Ok(entries) = std::fs::read_dir(dir) {
@@ -126,7 +137,7 @@ pub fn find_texture_file(
 }
 
 /// Get texture dimensions without loading full pixel data
-pub fn get_texture_dimensions(texture_name: &str) -> (u32, u32) {
+pub fn get_texture_dimensions(texture_name: &str, preferred_subfolder: Option<&str>) -> (u32, u32) {
     let textures_path = std::path::Path::new("REZ/TEXTURES");
 
     let variations = [
@@ -146,7 +157,7 @@ pub fn get_texture_dimensions(texture_name: &str) -> (u32, u32) {
     ];
 
     for var in &variations {
-        if let Some(dtx_path) = find_texture_file(textures_path, var) {
+        if let Some(dtx_path) = find_texture_file(textures_path, var, preferred_subfolder) {
             if let Ok(dtx) = dtx::DtxFile::read_from_file(&dtx_path) {
                 return (dtx.width as u32, dtx.height as u32);
             }
@@ -162,6 +173,8 @@ pub unsafe fn create_texture_image(
     data: &mut AppData,
 ) -> Result<()> {
     let textures_path = std::path::Path::new("REZ/TEXTURES");
+    let prefix_owned = data.texture_prefix.clone();
+    let pref = if prefix_owned.is_empty() { None } else { Some(prefix_owned.as_str()) };
 
     println!("=== LOADING LEVEL TEXTURES ===");
     println!("Textures to load: {}", data.level_textures.len());
@@ -174,7 +187,7 @@ pub unsafe fn create_texture_image(
     for i in 0..data.level_textures.len() {
         let texture_name = data.level_textures[i].name.clone();
 
-        let loaded = if let Some(dtx_path) = find_texture_file(textures_path, &texture_name) {
+        let loaded = if let Some(dtx_path) = find_texture_file(textures_path, &texture_name, pref) {
             match load_dtx_texture(&dtx_path) {
                 Ok(tex) => {
                     loaded_count += 1;
@@ -205,7 +218,7 @@ pub unsafe fn create_texture_image(
 
             let mut found_tex = None;
             for var in &variations {
-                if let Some(dtx_path) = find_texture_file(textures_path, var) {
+                if let Some(dtx_path) = find_texture_file(textures_path, var, pref) {
                     if let Ok(tex) = load_dtx_texture(&dtx_path) {
                         found_tex = Some(tex);
                         break;
@@ -226,7 +239,7 @@ pub unsafe fn create_texture_image(
                         .split(['\\', '/'])
                         .last()
                         .unwrap_or(&texture_name);
-                    if let Some(dtx_path) = find_texture_file(skins_path, skin_name) {
+                    if let Some(dtx_path) = find_texture_file(skins_path, skin_name, None) {
                         if let Ok(tex) = load_dtx_texture(&dtx_path) {
                             found_tex = Some(tex);
                         }

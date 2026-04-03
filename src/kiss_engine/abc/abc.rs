@@ -50,6 +50,16 @@ pub struct AbcVector {
     pub z: f32,
 }
 
+impl AbcVector {
+    pub fn lerp(&self, other: &Self, t: f32) -> Self {
+        Self {
+            x: self.x + t * (other.x - self.x),
+            y: self.y + t * (other.y - self.y),
+            z: self.z + t * (other.z - self.z),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AbcQuaternion {
     pub x: f32,
@@ -66,6 +76,49 @@ impl AbcQuaternion {
             y: -self.y,
             z: -self.z,
             w: self.w,
+        }
+    }
+
+    pub fn dot(&self, other: &Self) -> f32 {
+        self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w
+    }
+
+    pub fn normalized(&self) -> Self {
+        let len = (self.x * self.x + self.y * self.y + self.z * self.z + self.w * self.w).sqrt();
+        if len > 0.0 {
+            Self { x: self.x / len, y: self.y / len, z: self.z / len, w: self.w / len }
+        } else {
+            *self
+        }
+    }
+
+    /// Spherical linear interpolation for smooth rotation blending.
+    pub fn slerp(&self, other: &Self, t: f32) -> Self {
+        let mut d = self.dot(other);
+        let mut other = *other;
+        // Take the shorter arc
+        if d < 0.0 {
+            other = Self { x: -other.x, y: -other.y, z: -other.z, w: -other.w };
+            d = -d;
+        }
+        // Near-parallel: fall back to normalised lerp
+        if d > 0.9995 {
+            return Self {
+                x: self.x + t * (other.x - self.x),
+                y: self.y + t * (other.y - self.y),
+                z: self.z + t * (other.z - self.z),
+                w: self.w + t * (other.w - self.w),
+            }.normalized();
+        }
+        let theta = d.acos();
+        let sin_theta = theta.sin();
+        let s0 = ((1.0 - t) * theta).sin() / sin_theta;
+        let s1 = (t * theta).sin() / sin_theta;
+        Self {
+            x: s0 * self.x + s1 * other.x,
+            y: s0 * self.y + s1 * other.y,
+            z: s0 * self.z + s1 * other.z,
+            w: s0 * self.w + s1 * other.w,
         }
     }
 
@@ -823,6 +876,307 @@ impl AbcModel {
 
         Some(AbcMesh { vertices, indices })
     }
+
+    /// Compute bind matrices for a specific animation keyframe without mutating self.
+    /// Returns one 4×4 matrix per node.
+    fn compute_bind_matrices_at_frame(&self, anim_idx: usize, kf_idx: usize) -> Vec<[[f32; 4]; 4]> {
+        let mut matrices = vec![identity_4x4(); self.nodes.len()];
+        if anim_idx >= self.animations.len() || self.nodes.is_empty() {
+            return matrices;
+        }
+        let flip_anim = self.transform_info.flip_anim != 0;
+        let anim = &self.animations[anim_idx];
+
+        for node_idx in 0..self.nodes.len() {
+            if node_idx >= anim.node_keyframes.len() || anim.node_keyframes[node_idx].is_empty() {
+                continue;
+            }
+            let kf = &anim.node_keyframes[node_idx][kf_idx.min(anim.node_keyframes[node_idx].len() - 1)];
+
+            let mut rot = kf.rotation;
+            if flip_anim {
+                rot = rot.conjugated();
+            }
+
+            let rot_m = rot.to_matrix3();
+            let local_mat: [[f32; 4]; 4] = [
+                [rot_m[0][0], rot_m[0][1], rot_m[0][2], kf.translation.x],
+                [rot_m[1][0], rot_m[1][1], rot_m[1][2], kf.translation.y],
+                [rot_m[2][0], rot_m[2][1], rot_m[2][2], kf.translation.z],
+                [0.0, 0.0, 0.0, 1.0],
+            ];
+
+            let parent_idx = self.nodes[node_idx].parent_index;
+            let parent_mat = if parent_idx >= 0 {
+                matrices[parent_idx as usize]
+            } else {
+                identity_4x4()
+            };
+
+            matrices[node_idx] = mat4_multiply(&parent_mat, &local_mat);
+        }
+        matrices
+    }
+
+    /// Extract a renderable mesh at a specific animation keyframe (Lithtech space).
+    /// `anim_idx` selects the animation, `kf_idx` the keyframe within it.
+    pub fn extract_mesh_lithtech_at_frame(&self, anim_idx: usize, kf_idx: usize) -> Option<AbcMesh> {
+        let piece = self.pieces.first()?;
+        let anim = self.animations.get(anim_idx)?;
+
+        let bind_matrices = self.compute_bind_matrices_at_frame(anim_idx, kf_idx);
+
+        let mut transformed_positions: Vec<[f32; 3]> = Vec::with_capacity(piece.vertices.len());
+        let mut transformed_normals: Vec<[f32; 3]> = Vec::with_capacity(piece.vertices.len());
+
+        for (vert_idx, vert) in piece.vertices.iter().enumerate() {
+            let node_idx = vert.transformation_index as usize;
+
+            let bind_mat = if node_idx < bind_matrices.len() {
+                &bind_matrices[node_idx]
+            } else {
+                &bind_matrices[0] // fallback
+            };
+
+            // Check for vertex animation (mesh deformation)
+            let pos = if node_idx < self.nodes.len()
+                && !self.nodes[node_idx].md_vert_list.is_empty()
+            {
+                let md_vert_count = self.nodes[node_idx].md_vert_list.len();
+                if let Some(md_idx) = self.nodes[node_idx]
+                    .md_vert_list
+                    .iter()
+                    .position(|&v| v == vert_idx as u16)
+                {
+                    let deform = &anim.node_deformations[node_idx];
+                    let flat_idx = kf_idx * md_vert_count + md_idx;
+                    if flat_idx < deform.positions.len() {
+                        let dp = &deform.positions[flat_idx];
+                        transform_point(bind_mat, dp)
+                    } else {
+                        transform_point(bind_mat, &vert.position)
+                    }
+                } else {
+                    transform_point(bind_mat, &vert.position)
+                }
+            } else {
+                transform_point(bind_mat, &vert.position)
+            };
+
+            let raw_normal = vert.normal.to_float();
+            let n = transform_normal(bind_mat, &raw_normal);
+
+            transformed_positions.push([pos.x, pos.y, pos.z]);
+            transformed_normals.push([n[0], n[1], n[2]]);
+        }
+
+        // Build index buffer from triangles (same topology as extract_mesh_lithtech)
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        let mut vert_map: HashMap<u64, u32> = HashMap::new();
+
+        for tri in &piece.triangles {
+            for corner in 0..3 {
+                let vi = tri.vertex_indices[corner] as usize;
+                if vi >= transformed_positions.len() {
+                    continue;
+                }
+
+                let uv = &tri.tex_coords[corner];
+                let uv_bits_u = uv.u.to_bits() as u64;
+                let uv_bits_v = uv.v.to_bits() as u64;
+                let key = (vi as u64) | (uv_bits_u << 16) | (uv_bits_v << 48);
+
+                let idx = if let Some(&existing) = vert_map.get(&key) {
+                    existing
+                } else {
+                    let new_idx = vertices.len() as u32;
+                    vertices.push(AbcMeshVertex {
+                        pos: transformed_positions[vi],
+                        normal: transformed_normals[vi],
+                        tex_coord: [uv.u, uv.v],
+                    });
+                    vert_map.insert(key, new_idx);
+                    new_idx
+                };
+
+                indices.push(idx);
+            }
+        }
+
+        Some(AbcMesh { vertices, indices })
+    }
+
+    /// Compute bind matrices at an arbitrary time by interpolating between
+    /// adjacent keyframes (slerp rotations, lerp translations).
+    fn compute_bind_matrices_at_time(&self, anim_idx: usize, time_ms: u32) -> Vec<[[f32; 4]; 4]> {
+        let mut matrices = vec![identity_4x4(); self.nodes.len()];
+        let anim = match self.animations.get(anim_idx) {
+            Some(a) => a,
+            None => return matrices,
+        };
+        if self.nodes.is_empty() || anim.keyframes.is_empty() {
+            return matrices;
+        }
+        let flip_anim = self.transform_info.flip_anim != 0;
+
+        // Find surrounding keyframe indices
+        let n_kf = anim.keyframes.len();
+        let mut kf0 = 0;
+        for i in 0..n_kf {
+            if anim.keyframes[i].time_index <= time_ms {
+                kf0 = i;
+            }
+        }
+        let kf1 = if kf0 + 1 < n_kf { kf0 + 1 } else { kf0 };
+        let t0 = anim.keyframes[kf0].time_index;
+        let t1 = anim.keyframes[kf1].time_index;
+        let t = if t1 > t0 { (time_ms - t0) as f32 / (t1 - t0) as f32 } else { 0.0 };
+
+        for node_idx in 0..self.nodes.len() {
+            if node_idx >= anim.node_keyframes.len() || anim.node_keyframes[node_idx].is_empty() {
+                continue;
+            }
+            let nk = &anim.node_keyframes[node_idx];
+            let ka = &nk[kf0.min(nk.len() - 1)];
+            let kb = &nk[kf1.min(nk.len() - 1)];
+
+            let translation = ka.translation.lerp(&kb.translation, t);
+            let mut rot = ka.rotation.slerp(&kb.rotation, t);
+            if flip_anim {
+                rot = rot.conjugated();
+            }
+
+            let rot_m = rot.to_matrix3();
+            let local_mat: [[f32; 4]; 4] = [
+                [rot_m[0][0], rot_m[0][1], rot_m[0][2], translation.x],
+                [rot_m[1][0], rot_m[1][1], rot_m[1][2], translation.y],
+                [rot_m[2][0], rot_m[2][1], rot_m[2][2], translation.z],
+                [0.0, 0.0, 0.0, 1.0],
+            ];
+
+            let parent_idx = self.nodes[node_idx].parent_index;
+            let parent_mat = if parent_idx >= 0 {
+                matrices[parent_idx as usize]
+            } else {
+                identity_4x4()
+            };
+            matrices[node_idx] = mat4_multiply(&parent_mat, &local_mat);
+        }
+        matrices
+    }
+
+    /// Extract a renderable mesh at an arbitrary animation time (in ms),
+    /// interpolating bone transforms and vertex deformations between keyframes.
+    pub fn extract_mesh_lithtech_at_time(&self, anim_idx: usize, time_ms: u32) -> Option<AbcMesh> {
+        let piece = self.pieces.first()?;
+        let anim = self.animations.get(anim_idx)?;
+
+        let bind_matrices = self.compute_bind_matrices_at_time(anim_idx, time_ms);
+
+        // Determine surrounding keyframe indices & blend factor for deformation lerp
+        let n_kf = anim.keyframes.len();
+        let mut kf0: usize = 0;
+        for i in 0..n_kf {
+            if anim.keyframes[i].time_index <= time_ms { kf0 = i; }
+        }
+        let kf1 = if kf0 + 1 < n_kf { kf0 + 1 } else { kf0 };
+        let t0 = anim.keyframes[kf0].time_index;
+        let t1 = anim.keyframes[kf1].time_index;
+        let t = if t1 > t0 { (time_ms - t0) as f32 / (t1 - t0) as f32 } else { 0.0 };
+
+        let mut transformed_positions: Vec<[f32; 3]> = Vec::with_capacity(piece.vertices.len());
+        let mut transformed_normals: Vec<[f32; 3]> = Vec::with_capacity(piece.vertices.len());
+
+        for (vert_idx, vert) in piece.vertices.iter().enumerate() {
+            let node_idx = vert.transformation_index as usize;
+            let bind_mat = if node_idx < bind_matrices.len() {
+                &bind_matrices[node_idx]
+            } else {
+                &bind_matrices[0]
+            };
+
+            let pos = if node_idx < self.nodes.len()
+                && !self.nodes[node_idx].md_vert_list.is_empty()
+            {
+                let md_vert_count = self.nodes[node_idx].md_vert_list.len();
+                if let Some(md_idx) = self.nodes[node_idx]
+                    .md_vert_list
+                    .iter()
+                    .position(|&v| v == vert_idx as u16)
+                {
+                    let deform = &anim.node_deformations[node_idx];
+                    let idx_a = kf0 * md_vert_count + md_idx;
+                    let idx_b = kf1 * md_vert_count + md_idx;
+                    if idx_a < deform.positions.len() && idx_b < deform.positions.len() {
+                        let dp = deform.positions[idx_a].lerp(&deform.positions[idx_b], t);
+                        transform_point(bind_mat, &dp)
+                    } else if idx_a < deform.positions.len() {
+                        transform_point(bind_mat, &deform.positions[idx_a])
+                    } else {
+                        transform_point(bind_mat, &vert.position)
+                    }
+                } else {
+                    transform_point(bind_mat, &vert.position)
+                }
+            } else {
+                transform_point(bind_mat, &vert.position)
+            };
+
+            let raw_normal = vert.normal.to_float();
+            let n = transform_normal(bind_mat, &raw_normal);
+            transformed_positions.push([pos.x, pos.y, pos.z]);
+            transformed_normals.push([n[0], n[1], n[2]]);
+        }
+
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        let mut vert_map: HashMap<u64, u32> = HashMap::new();
+
+        for tri in &piece.triangles {
+            for corner in 0..3 {
+                let vi = tri.vertex_indices[corner] as usize;
+                if vi >= transformed_positions.len() { continue; }
+                let uv = &tri.tex_coords[corner];
+                let uv_bits_u = uv.u.to_bits() as u64;
+                let uv_bits_v = uv.v.to_bits() as u64;
+                let key = (vi as u64) | (uv_bits_u << 16) | (uv_bits_v << 48);
+
+                let idx = if let Some(&existing) = vert_map.get(&key) {
+                    existing
+                } else {
+                    let new_idx = vertices.len() as u32;
+                    vertices.push(AbcMeshVertex {
+                        pos: transformed_positions[vi],
+                        normal: transformed_normals[vi],
+                        tex_coord: [uv.u, uv.v],
+                    });
+                    vert_map.insert(key, new_idx);
+                    new_idx
+                };
+                indices.push(idx);
+            }
+        }
+
+        Some(AbcMesh { vertices, indices })
+    }
+
+    /// Number of keyframes in the given animation, or 0 if not present.
+    pub fn num_keyframes(&self, anim_idx: usize) -> usize {
+        self.animations.get(anim_idx).map_or(0, |a| a.keyframes.len())
+    }
+
+    /// Duration of the given animation in milliseconds, or 0 if not present.
+    pub fn anim_length_ms(&self, anim_idx: usize) -> u32 {
+        self.animations.get(anim_idx).map_or(0, |a| a.length_ms)
+    }
+
+    /// Keyframe time indices (ms) for the given animation.
+    pub fn keyframe_times_ms(&self, anim_idx: usize) -> Vec<u32> {
+        self.animations.get(anim_idx)
+            .map(|a| a.keyframes.iter().map(|kf| kf.time_index).collect())
+            .unwrap_or_default()
+    }
 }
 
 // ─── World Object Extraction ───
@@ -843,8 +1197,14 @@ pub struct PlacedAbcObject {
     pub position: [f32; 3],
     /// Rotation quaternion from DAT
     pub rotation: [f32; 4],
-    /// Mesh data ready for rendering
+    /// Mesh data ready for rendering (keyframe 0)
     pub mesh: AbcMesh,
+    /// Additional keyframe meshes for idle animation (keyframes 1..N, world space)
+    pub anim_frame_meshes: Vec<AbcMesh>,
+    /// Keyframe time indices in milliseconds (length = total keyframe count including frame 0)
+    pub anim_keyframe_times_ms: Vec<u32>,
+    /// Total idle animation duration in milliseconds
+    pub anim_duration_ms: u32,
 }
 
 /// Realm-specific asset info derived from the DAT file path.
@@ -1128,6 +1488,18 @@ fn should_snap_to_floor(type_name: &str) -> bool {
     false
 }
 
+/// Returns true for creature type names that should play idle animation.
+fn is_creature_type(type_name: &str) -> bool {
+    matches!(type_name,
+        "CHeadless" | "CArachniclown" | "CBallBuster" | "CBatwing"
+        | "CBlackwell" | "CBladeMaster" | "CFatLady" | "CGasBag"
+        | "CGrinder" | "CHellSpore" | "CLarva" | "CMeanieBeanie"
+        | "CPin" | "CRotCrawl" | "CStrongman" | "CStrutter"
+        | "CStump" | "CTiberius" | "CTickler" | "CUniPsycho"
+        | "CStarGrave" | "CFortunado" | "CRoly"
+    )
+}
+
 /// Scan DAT world objects for ABC model placements, load each referenced model,
 /// transform its mesh to world space, and return placed objects ready for
 /// rendering.
@@ -1281,12 +1653,13 @@ pub fn extract_abc_objects(
         const FLOOR_SNAP_OFFSET: f32 = 5.0;
 
         // CModel/CModelDeco objects whose model is a wall-mounted decoration
-        // (light, flame, gargoyle, mask) should NOT be snapped to the floor.
+        // (light, flame, gargoyle, mask, skull) should NOT be snapped to the floor.
         let is_wall_mounted = if tn == "CModel" || tn == "CModelDeco" {
             let lower = filename.to_ascii_lowercase();
-            lower.contains("lamp") || lower.contains("light")
+            lower.contains("light")
                 || lower.contains("flameh") || lower.contains("starlight")
                 || lower.contains("garg") || lower.contains("mask")
+                || lower.contains("skull")
         } else {
             false
         };
@@ -1409,6 +1782,65 @@ pub fn extract_abc_objects(
             v.normal[2] = rny;
         }
 
+        // Helper closure: apply world transform (scale, rotate, translate, coord-swap)
+        // to a Lithtech-space mesh, producing renderer-space vertices.
+        let transform_mesh_to_world = |mesh: &AbcMesh| -> Vec<AbcMeshVertex> {
+            let mut verts = mesh.vertices.clone();
+            for v in &mut verts {
+                let px = v.pos[0] * obj_scale;
+                let py = v.pos[1] * obj_scale;
+                let pz = v.pos[2] * obj_scale;
+                let rx = r00 * px + r01 * py + r02 * pz;
+                let ry = r10 * px + r11 * py + r12 * pz;
+                let rz = r20 * px + r21 * py + r22 * pz;
+                v.pos[0] = (rx + pos.x) * scale;
+                v.pos[1] = (rz + pos.z) * scale;
+                v.pos[2] = (ry + pos.y) * scale;
+                let nx = v.normal[0];
+                let ny = v.normal[1];
+                let nz = v.normal[2];
+                v.normal[0] = r00 * nx + r01 * ny + r02 * nz;
+                v.normal[1] = r20 * nx + r21 * ny + r22 * nz;
+                v.normal[2] = r10 * nx + r11 * ny + r12 * nz;
+            }
+            verts
+        };
+
+        // Extract animation frames for creatures, sampled at a fixed rate with
+        // bone-interpolation (slerp/lerp) for smooth playback.
+        const CREATURE_ANIM_FPS: f32 = 60.0;
+
+        let (anim_frame_meshes, anim_keyframe_times_ms, anim_duration_ms) =
+            if is_creature_type(tn) && abc_model.num_keyframes(0) > 1
+        {
+            let duration_ms = abc_model.anim_length_ms(0);
+            let total_frames = ((duration_ms as f32 * CREATURE_ANIM_FPS / 1000.0).ceil() as u32).max(2);
+            let step_ms = duration_ms as f32 / total_frames as f32;
+
+            let mut frame_meshes = Vec::with_capacity(total_frames as usize - 1);
+            let mut times_ms = Vec::with_capacity(total_frames as usize);
+            times_ms.push(0u32); // frame 0 = base mesh
+
+            for i in 1..total_frames {
+                let t_ms = (i as f32 * step_ms) as u32;
+                times_ms.push(t_ms);
+                if let Some(kf_mesh) = abc_model.extract_mesh_lithtech_at_time(0, t_ms) {
+                    let world_kf_verts = transform_mesh_to_world(&kf_mesh);
+                    frame_meshes.push(AbcMesh {
+                        vertices: world_kf_verts,
+                        indices: kf_mesh.indices.clone(),
+                    });
+                }
+            }
+            log::info!(
+                "Creature '{}' idle animation: {} interpolated frames @ {:.0}fps, {}ms",
+                tn, total_frames, CREATURE_ANIM_FPS, duration_ms
+            );
+            (frame_meshes, times_ms, duration_ms)
+        } else {
+            (Vec::new(), Vec::new(), 0)
+        };
+
         placed.push(PlacedAbcObject {
             dat_object_index: obj_index,
             type_name: obj.type_name.clone(),
@@ -1420,6 +1852,9 @@ pub fn extract_abc_objects(
                 vertices: world_verts,
                 indices: base_mesh.indices.clone(),
             },
+            anim_frame_meshes,
+            anim_keyframe_times_ms,
+            anim_duration_ms,
         });
     }
 

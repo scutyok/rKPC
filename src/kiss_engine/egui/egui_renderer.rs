@@ -50,6 +50,12 @@ pub struct EguiRenderer {
     // Screen dimensions
     screen_width: f32,
     screen_height: f32,
+
+    // Optional user texture (loading screen image)
+    user_image: Option<vk::Image>,
+    user_memory: Option<vk::DeviceMemory>,
+    user_view: Option<vk::ImageView>,
+    user_descriptor_set: Option<vk::DescriptorSet>,
 }
 
 impl EguiRenderer {
@@ -154,12 +160,13 @@ impl EguiRenderer {
         // Create descriptor pool
         let pool_size = vk::DescriptorPoolSize::builder()
             .type_(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(1);
+            .descriptor_count(2);
 
         let pool_sizes = &[pool_size];
         let pool_info = vk::DescriptorPoolCreateInfo::builder()
             .pool_sizes(pool_sizes)
-            .max_sets(1);
+            .max_sets(2)
+            .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET);
 
         let descriptor_pool = device.create_descriptor_pool(&pool_info, None)?;
 
@@ -229,6 +236,10 @@ impl EguiRenderer {
             index_capacity: initial_index_capacity,
             screen_width: width as f32,
             screen_height: height as f32,
+            user_image: None,
+            user_memory: None,
+            user_view: None,
+            user_descriptor_set: None,
         })
     }
 
@@ -252,6 +263,77 @@ impl EguiRenderer {
         Ok(())
     }
 
+    /// Register RGBA pixel data as a user texture for egui.
+    /// Returns the `TextureId` to use in egui widgets.
+    pub unsafe fn set_user_texture(
+        &mut self,
+        instance: &Instance,
+        device: &Device,
+        physical_device: vk::PhysicalDevice,
+        command_pool: vk::CommandPool,
+        graphics_queue: vk::Queue,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<egui::TextureId> {
+        // Clean up any existing user texture
+        self.clear_user_texture(device);
+
+        let (image, memory, view) = create_texture(
+            instance,
+            device,
+            physical_device,
+            command_pool,
+            graphics_queue,
+            pixels,
+            width,
+            height,
+        )?;
+
+        // Allocate a descriptor set from the pool
+        let layouts = &[self.descriptor_set_layout];
+        let alloc_info = vk::DescriptorSetAllocateInfo::builder()
+            .descriptor_pool(self.descriptor_pool)
+            .set_layouts(layouts);
+        let ds = device.allocate_descriptor_sets(&alloc_info)?[0];
+
+        let image_info = vk::DescriptorImageInfo::builder()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(view)
+            .sampler(self.font_sampler);
+        let image_infos = &[image_info];
+        let write = vk::WriteDescriptorSet::builder()
+            .dst_set(ds)
+            .dst_binding(0)
+            .dst_array_element(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(image_infos);
+        device.update_descriptor_sets(&[write], &[] as &[vk::CopyDescriptorSet]);
+
+        self.user_image = Some(image);
+        self.user_memory = Some(memory);
+        self.user_view = Some(view);
+        self.user_descriptor_set = Some(ds);
+
+        Ok(egui::TextureId::User(0))
+    }
+
+    /// Remove the user texture and free GPU resources.
+    pub unsafe fn clear_user_texture(&mut self, device: &Device) {
+        if let Some(ds) = self.user_descriptor_set.take() {
+            let _ = device.free_descriptor_sets(self.descriptor_pool, &[ds]);
+        }
+        if let Some(view) = self.user_view.take() {
+            device.destroy_image_view(view, None);
+        }
+        if let Some(mem) = self.user_memory.take() {
+            device.free_memory(mem, None);
+        }
+        if let Some(img) = self.user_image.take() {
+            device.destroy_image(img, None);
+        }
+    }
+
     /// Render egui primitives
     pub unsafe fn render(
         &mut self,
@@ -273,8 +355,10 @@ impl EguiRenderer {
 
         for clipped in clipped_primitives {
             if let egui::epaint::Primitive::Mesh(mesh) = &clipped.primitive {
-                // Skip if not using font texture
-                if mesh.texture_id != egui::TextureId::default() {
+                // Skip textures we don't know about
+                if mesh.texture_id != egui::TextureId::default()
+                    && !(mesh.texture_id == egui::TextureId::User(0) && self.user_descriptor_set.is_some())
+                {
                     continue;
                 }
 
@@ -405,10 +489,32 @@ impl EguiRenderer {
 
         // Draw each primitive with clip rect
         let mut index_offset = 0u32;
+        let mut current_texture_id = egui::TextureId::default();
         for clipped in clipped_primitives {
             if let egui::epaint::Primitive::Mesh(mesh) = &clipped.primitive {
-                if mesh.texture_id != egui::TextureId::default() {
+                // Skip textures we don't know about
+                if mesh.texture_id != egui::TextureId::default()
+                    && !(mesh.texture_id == egui::TextureId::User(0) && self.user_descriptor_set.is_some())
+                {
                     continue;
+                }
+
+                // Bind the right descriptor set when texture changes
+                if mesh.texture_id != current_texture_id {
+                    let ds = if mesh.texture_id == egui::TextureId::User(0) {
+                        self.user_descriptor_set.unwrap()
+                    } else {
+                        self.descriptor_set
+                    };
+                    device.cmd_bind_descriptor_sets(
+                        command_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        self.pipeline_layout,
+                        0,
+                        &[ds],
+                        &[],
+                    );
+                    current_texture_id = mesh.texture_id;
                 }
 
                 let clip = &clipped.clip_rect;
@@ -502,6 +608,7 @@ impl EguiRenderer {
 
     /// Cleanup resources
     pub unsafe fn destroy(&mut self, device: &Device) {
+        self.clear_user_texture(device);
         for fb in &self.framebuffers {
             device.destroy_framebuffer(*fb, None);
         }

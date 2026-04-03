@@ -62,6 +62,27 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
 ) -> Result<LoadedWorld> {
     info!("Loading DAT file: {}", path.as_ref().display());
 
+    // Derive preferred texture subfolder from DAT filename (e.g. "R2M1A.DAT" → "R2M1")
+    {
+        let stem = path.as_ref()
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_uppercase();
+        let textures_root = std::path::Path::new("REZ/TEXTURES");
+        if textures_root.join(&stem).is_dir() {
+            data.texture_prefix = stem;
+        } else {
+            let trimmed = stem.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+            if !trimmed.is_empty() && textures_root.join(trimmed).is_dir() {
+                data.texture_prefix = trimmed.to_string();
+            } else {
+                data.texture_prefix.clear();
+            }
+        }
+        println!("Texture prefix: '{}'", data.texture_prefix);
+    }
+
     let dat_file = dat::DatFile::read_from_file(&path)
         .map_err(|e| anyhow!("Failed to parse DAT file: {}", e))?;
 
@@ -166,7 +187,8 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
             if let Some(&dims) = texture_dimensions.get(&textured_mesh.texture_name) {
                 dims
             } else {
-                let dims = get_texture_dimensions(&textured_mesh.texture_name);
+                let dims = get_texture_dimensions(&textured_mesh.texture_name, 
+                    if data.texture_prefix.is_empty() { None } else { Some(&data.texture_prefix) });
                 texture_dimensions.insert(textured_mesh.texture_name.clone(), dims);
                 dims
             };
@@ -297,7 +319,10 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
     // NOW add ABC geometry – first_abc_draw_group is accurate because world subdivision is done.
     let first_abc_draw_group = data.draw_groups.len();
 
-    for abc_obj in &abc_objects {
+    // Per-creature animation data: (abc_index, keyframe_first_indices, keyframe_times_ms, duration_ms)
+    let mut creature_anim_data: Vec<(usize, Vec<u32>, Vec<u32>, u32)> = Vec::new();
+
+    for (abc_idx, abc_obj) in abc_objects.iter().enumerate() {
         let skin_name = abc_obj.skin_filename.clone();
         // Skin was registered above; look it up directly.
         let tex_index = *texture_name_to_index.get(&skin_name).unwrap();
@@ -325,6 +350,46 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
             vertex_offset: 0,
             model_matrix: None,
         });
+
+        // Add extra keyframe meshes for animated creatures
+        if !abc_obj.anim_frame_meshes.is_empty() {
+            let mut kf_first_indices = vec![idx_base]; // keyframe 0
+
+            for kf_mesh in &abc_obj.anim_frame_meshes {
+                let kf_vert_base = data.vertices.len() as u32;
+                let kf_idx_base = data.indices.len() as u32;
+
+                for v in &kf_mesh.vertices {
+                    data.vertices.push(Vertex {
+                        pos: vec3(v.pos[0], v.pos[1], v.pos[2]),
+                        color: vec3(1.0, 1.0, 1.0),
+                        tex_coord: vec2(v.tex_coord[0], v.tex_coord[1]),
+                        normal: vec3(v.normal[0], v.normal[1], v.normal[2]),
+                    });
+                }
+
+                for &i in &kf_mesh.indices {
+                    data.indices.push(kf_vert_base + i);
+                }
+
+                kf_first_indices.push(kf_idx_base);
+            }
+
+            creature_anim_data.push((
+                abc_idx,
+                kf_first_indices,
+                abc_obj.anim_keyframe_times_ms.clone(),
+                abc_obj.anim_duration_ms,
+            ));
+
+            log::info!(
+                "Added {} animation keyframes for creature '{}' ({} extra verts, {} extra indices)",
+                abc_obj.anim_frame_meshes.len(),
+                abc_obj.type_name,
+                abc_obj.anim_frame_meshes.iter().map(|m| m.vertices.len()).sum::<usize>(),
+                abc_obj.anim_frame_meshes.iter().map(|m| m.indices.len()).sum::<usize>(),
+            );
+        }
     }
 
     let placed_abc_objects = abc_objects;
@@ -456,7 +521,8 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
                     texture_names.push(skin_name.clone());
                     texture_name_to_index.insert(skin_name.clone(), idx);
                     if !texture_dimensions.contains_key(&skin_name) {
-                        texture_dimensions.insert(skin_name.clone(), get_texture_dimensions(&skin_name));
+                        texture_dimensions.insert(skin_name.clone(), get_texture_dimensions(&skin_name,
+                            if data.texture_prefix.is_empty() { None } else { Some(&data.texture_prefix) }));
                     }
                     idx
                 };
@@ -709,7 +775,8 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
                         if let Some(&dims) = texture_dimensions.get(&textured_mesh.texture_name) {
                             dims
                         } else {
-                            let dims = get_texture_dimensions(&textured_mesh.texture_name);
+                            let dims = get_texture_dimensions(&textured_mesh.texture_name,
+                                if data.texture_prefix.is_empty() { None } else { Some(&data.texture_prefix) });
                             texture_dimensions.insert(textured_mesh.texture_name.clone(), dims);
                             dims
                         };
@@ -895,6 +962,7 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
         &door_collision_ranges,
         &collision_positions,
         scale,
+        &creature_anim_data,
     );
 
     // Load SCR scripts from the matching MAPDATA directory.
@@ -910,36 +978,7 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
         let scr_dir = format!("REZ/MAPDATA/{}/{}/{}", realm_dir, map_group, file_stem);
         println!("=== SCR directory: {} ===", scr_dir);
 
-        // Debug: dump script/trigger/switch DAT objects to file
-        {
-            use std::io::Write;
-            let mut dbg = std::fs::File::create("debug_dat_objects.txt").unwrap();
-            for obj in &dat_file.objects {
-                let tn = obj.type_name.to_lowercase();
-                if tn.contains("script") || tn.contains("sequence") || tn.contains("trigger")
-                    || tn.contains("volume") || tn.contains("switch") || tn.contains("slime")
-                    || tn.contains("lava")
-                {
-                    writeln!(dbg, "=== DAT Object: type='{}' ===", obj.type_name).ok();
-                    for prop in &obj.properties {
-                        writeln!(dbg, "  {} = {:?}", prop.name, prop.value).ok();
-                    }
-                    writeln!(dbg).ok();
-                }
-            }
-            // Also dump all trigger volumes
-            writeln!(dbg, "\n=== TRIGGER VOLUMES ===").ok();
-            for (name, vmin, vmax) in &trigger_volumes {
-                writeln!(dbg, "  '{}': ({:.2},{:.2},{:.2})-({:.2},{:.2},{:.2})",
-                    name, vmin[0], vmin[1], vmin[2], vmax[0], vmax[1], vmax[2]).ok();
-            }
-            // Also dump BSP sub-models
-            writeln!(dbg, "\n=== BSP SUB-MODELS ===").ok();
-            for (name, pivot, dgs, zh) in &bsp_submodels {
-                writeln!(dbg, "  '{}': pivot=({:.2},{:.2},{:.2}) z_height={:.2} dgs={:?}",
-                    name, pivot[0], pivot[1], pivot[2], zh, dgs).ok();
-            }
-        }
+
 
         if let Ok(entries) = std::fs::read_dir(&scr_dir) {
             for entry in entries.flatten() {
@@ -1104,27 +1143,7 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
         println!("=== Loaded {} scripts, {} BSP doors, {} BSP switches ===",
             game_objects.scripts.len(), game_objects.bsp_doors.len(), game_objects.bsp_switches.len());
 
-        // Append resolved state to debug file
-        {
-            use std::fs::OpenOptions;
-            use std::io::Write;
-            if let Ok(mut dbg) = OpenOptions::new().append(true).open("debug_dat_objects.txt") {
-                writeln!(dbg, "\n=== LOADED SCRIPTS ===").ok();
-                for (name, runner) in &game_objects.scripts {
-                    writeln!(dbg, "  trigger='{}' ({} commands)", name, runner.commands.len()).ok();
-                }
-                writeln!(dbg, "\n=== BSP SWITCHES ===").ok();
-                for sw in &game_objects.bsp_switches {
-                    writeln!(dbg, "  '{}' center=({:.2},{:.2},{:.2}) scripts={:?}",
-                        sw.name, sw.center[0], sw.center[1], sw.center[2], sw.script_targets).ok();
-                }
-                writeln!(dbg, "\n=== SCRIPT TRIGGERS (resolved) ===").ok();
-                for t in &game_objects.script_triggers {
-                    writeln!(dbg, "  '{}' AABB=({:.2},{:.2},{:.2})-({:.2},{:.2},{:.2})",
-                        t.name, t.min[0], t.min[1], t.min[2], t.max[0], t.max[1], t.max[2]).ok();
-                }
-            }
-        }
+
     }
 
     // Build entity cylinders for solid objects (barrels, headless enemies).

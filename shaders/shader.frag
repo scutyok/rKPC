@@ -15,6 +15,11 @@ struct PointLight {
     vec4 colorIntensity;    // rgb = color * intensity (pre-multiplied), w = invRadius
 };
 
+// Shadow caster structure (matches Rust GpuShadowCaster)
+struct ShadowCaster {
+    vec4 positionRadius;    // xyz = position (world space), w = radius
+};
+
 // Lighting UBO
 layout(binding = 2) uniform LightingData {
     vec4 cameraPos;       // xyz = camera world position
@@ -26,6 +31,11 @@ layout(binding = 2) uniform LightingData {
     uint _pad1;
     uint _pad2;
     PointLight lights[128];
+    uint shadowCount;
+    uint _pad3;
+    uint _pad4;
+    uint _pad5;
+    ShadowCaster shadowCasters[32];
 } lighting;
 
 // Push constants for opacity
@@ -96,6 +106,41 @@ void main() {
 
         totalLight += lightColI * NdotL * atten;
     }
+
+    // ── Blob shadows (Lithtech-style projected downward) ────────────────
+    // Like the original engine, shadows project straight down (dir = -Y).
+    // Multiplicative darkening on upward-facing surfaces beneath shadow casters.
+    float shadowFactor = 1.0;
+    int nShadows = int(min(lighting.shadowCount, 32u));
+    for (int s = 0; s < nShadows; s++) {
+        vec3  casterPos    = lighting.shadowCasters[s].positionRadius.xyz;
+        float shadowRadius = lighting.shadowCasters[s].positionRadius.w;
+
+        // Only shadow fragments below the caster (Y is up in Vulkan coords)
+        float heightDiff = casterPos.y - fragWorldPos.y;
+        if (heightDiff < 0.0 || heightDiff > 3.0) continue;
+
+        // Horizontal distance from caster center
+        vec2  horizDelta = fragWorldPos.xz - casterPos.xz;
+        float horizDist  = length(horizDelta);
+        if (horizDist >= shadowRadius) continue;
+
+        // Smooth circular falloff (dark center, fades at edges)
+        float t = horizDist / shadowRadius;
+        float shadow = 1.0 - smoothstep(0.0, 1.0, t);
+
+        // Fade shadow with height (strong near floor, gone far below)
+        float heightFade = 1.0 - smoothstep(0.0, 3.0, heightDiff);
+        shadow *= heightFade;
+
+        // Only shadow roughly upward-facing surfaces (floors, ramps)
+        float upFacing = max(0.0, N.y);
+        shadow *= upFacing;
+
+        // Darken (0.5 = shadow darkness intensity, like Lithtech's SRCBLEND_ZERO/DESTBLEND_SRCCOLOR)
+        shadowFactor = min(shadowFactor, 1.0 - shadow * 0.5);
+    }
+    totalLight *= shadowFactor;
 
     outColor = vec4(texColor.rgb * totalLight, texColor.a);
 

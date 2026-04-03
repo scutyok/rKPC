@@ -11,7 +11,7 @@ const MAX_INTERSECT_PUSHBACK_ITERATIONS: usize = 50;
 const EXTRA_PENETRATION_ADD: f32 = 0.05;
 
 // Player cylinder dimensions (Z-up: height along Z, radius in XY)
-const PLAYER_HALF_HEIGHT: f32 = 0.5;
+const PLAYER_HALF_HEIGHT: f32 = 0.35;
 const STAIR_ALLOW_UP_LIMIT: f32 = 0.7071; // cos(45°) — steepest walkable surface
 
 
@@ -564,11 +564,15 @@ impl MovingCylinder {
 
 pub trait HeightProvider: Send + Sync {
 	fn ground_height(&self, x: f32, y: f32, current_z: Option<f32>) -> f32;
+	/// Returns the Z of the lowest surface *above* `current_z`.
+	/// If nothing is found, returns `f32::MAX`.
+	fn ceiling_height(&self, x: f32, y: f32, current_z: f32) -> f32;
 }
 
 pub struct FlatGround;
 impl HeightProvider for FlatGround {
 	fn ground_height(&self, _x: f32, _y: f32, _current_z: Option<f32>) -> f32 { 0.0 }
+	fn ceiling_height(&self, _x: f32, _y: f32, _current_z: f32) -> f32 { f32::MAX }
 }
 
 
@@ -584,15 +588,15 @@ pub enum PlayerMode { Flying, Walk }
 // resolve_player_collision — vertical ground correction
 // ------------------------------------------------------------------ //
 
-pub fn resolve_player_collision(pos: &mut Vector3<f32>, height_provider: &dyn HeightProvider, player_radius: f32, _step_height: f32) {
+pub fn resolve_player_collision(pos: &mut Vector3<f32>, height_provider: &dyn HeightProvider, player_radius: f32, step_height: f32) {
 	let ground_z = height_provider.ground_height(pos.x, pos.y, Some(pos.z));
 	let min_z = ground_z + player_radius;
 	if pos.z < min_z {
 		let diff = min_z - pos.z;
-		if diff <= 0.5 {
+		// Only snap upward if the correction is within a step height.
+		// Large diffs mean ground_height found an upper surface — don't teleport.
+		if diff <= step_height {
 			pos.z = min_z;
-		} else {
-			pos.z += 0.3;
 		}
 	}
 }
@@ -840,8 +844,8 @@ impl MeshHeightProvider {
 			if nmag < 1e-6 { continue; }
 			let normal = n / nmag;
 
-			// Must be floor-like (nearly horizontal). Handle both winding
-			// orders by flipping so normal points up.
+			// Handle both winding orders by flipping so normal points up.
+			// Lithtech meshes have arbitrary winding.
 			let normal = if normal.z < 0.0 { -normal } else { normal };
 			if normal.z <= 0.001 { continue; }
 
@@ -860,7 +864,10 @@ impl MeshHeightProvider {
 
 			let max_push = max_z - bx.min.z;
 
-			if max_push > 0.0 && normal.z > STAIR_ALLOW_UP_LIMIT {
+			// Guard: only step onto surfaces near foot level (below player center).
+			// Ceilings intersecting from above have max_z above the player center.
+			let is_floor_level = max_z <= p1.z + 0.05;
+			if max_push > 0.0 && is_floor_level && normal.z > STAIR_ALLOW_UP_LIMIT {
 				let push = max_push + 0.01;
 				let to_add = Vector3::new(0.0, 0.0, push);
 
@@ -1193,7 +1200,8 @@ fn closest_point_on_triangle(p: Vector3<f32>, a: Vector3<f32>, b: Vector3<f32>, 
 
 impl HeightProvider for MeshHeightProvider {
 	fn ground_height(&self, x: f32, y: f32, current_z: Option<f32>) -> f32 {
-		let mut best: Option<f32> = None;
+		let mut best_below: Option<f32> = None;
+		let mut best_above: Option<f32> = None;
 		let idx = &self.indices;
 		let pos = &self.positions;
 
@@ -1225,23 +1233,68 @@ impl HeightProvider for MeshHeightProvider {
 				if n.z.abs() < 1e-6 { continue; }
 				let z = v0.z - (n.x * (x - v0.x) + n.y * (y - v0.y)) / n.z;
 				if let Some(curz) = current_z {
-					if z > curz + 0.6 { continue; }
-				}
-				best = Some(match best {
-					None => z,
-					Some(prev_best) => {
-						if let Some(curz) = current_z {
-							let da = (curz - z).abs();
-							let db = (curz - prev_best).abs();
-							if da < db { z } else { prev_best }
-						} else {
-							prev_best.max(z)
-						}
+					if z > curz + 0.5 { continue; } // skip surfaces way above
+					if z <= curz {
+						// Surface at or below player center → real ground.
+						// Pick the highest one (closest floor below us).
+						best_below = Some(best_below.map_or(z, |b: f32| b.max(z)));
+					} else {
+						// Surface slightly above player center (step-up).
+						// Pick the lowest one (smallest step).
+						best_above = Some(best_above.map_or(z, |b: f32| b.min(z)));
 					}
-				});
+				} else {
+					best_below = Some(best_below.map_or(z, |b: f32| b.max(z)));
+				}
 			}
 		}
-		best.unwrap_or(0.0)
+		// Prefer surfaces below the player; only fall back to step-ups.
+		// This prevents ceilings (which are above curz) from being picked
+		// as ground while the player is jumping.
+		best_below.or(best_above).unwrap_or(0.0)
+	}
+
+	fn ceiling_height(&self, x: f32, y: f32, current_z: f32) -> f32 {
+		let mut best: f32 = f32::MAX;
+		let idx = &self.indices;
+		let pos = &self.positions;
+
+		let query_box = Aabb {
+			min: Vector3::new(x - 1.0, y - 1.0, -1000.0),
+			max: Vector3::new(x + 1.0, y + 1.0, 1000.0),
+		};
+
+		let mut candidates: Vec<usize> = Vec::new();
+		if let Some(ref b) = self.bvh {
+			b.query_aabb(&query_box, &mut candidates);
+		} else {
+			candidates = (0..(idx.len() / 3)).collect();
+		}
+
+		for &t in candidates.iter() {
+			let i0 = idx[t*3]     as usize;
+			let i1 = idx[t*3 + 1] as usize;
+			let i2 = idx[t*3 + 2] as usize;
+			if i0 >= pos.len() || i1 >= pos.len() || i2 >= pos.len() { continue; }
+			let v0 = pos[i0];
+			let v1 = pos[i1];
+			let v2 = pos[i2];
+
+			if MeshHeightProvider::point_in_tri_2d(x, y, v0, v1, v2) {
+				let edge1 = v1 - v0;
+				let edge2 = v2 - v0;
+				let n = edge1.cross(edge2);
+				if n.z.abs() < 1e-6 { continue; }
+				// Only consider downward-facing surfaces (actual ceilings)
+				if n.z > 0.0 { continue; }
+				let z = v0.z - (n.x * (x - v0.x) + n.y * (y - v0.y)) / n.z;
+				// Surface must be above current_z (head position passed by caller)
+				if z > current_z && z < best {
+					best = z;
+				}
+			}
+		}
+		best
 	}
 }
 

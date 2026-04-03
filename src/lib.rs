@@ -74,6 +74,9 @@ pub mod dtx;
 #[path = "kiss_engine/egui/egui_renderer.rs"]
 pub mod egui_renderer;
 
+#[path = "kiss_engine/pcx.rs"]
+pub mod pcx;
+
 #[path = "kiss_engine/collision/collision.rs"]
 pub mod collision;
 
@@ -83,11 +86,20 @@ pub mod occlusion_culling;
 #[path = "kiss_engine/rendering/lights.rs"]
 pub mod lights;
 
+#[path = "kiss_engine/rendering/shadows.rs"]
+pub mod shadows;
+
+#[path = "kiss_engine/rendering/lighting_ubo.rs"]
+pub mod lighting_ubo;
+
 #[path = "kiss_engine/rendering/camera.rs"]
 pub mod camera;
 
 #[path = "kiss_engine/rendering/types.rs"]
 pub mod types;
+
+#[path = "kiss_engine/player/player_movement.rs"]
+pub mod player_movement;
 
 #[path = "kiss_engine/abc/abc.rs"]
 pub mod abc;

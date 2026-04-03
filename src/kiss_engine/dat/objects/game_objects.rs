@@ -172,6 +172,7 @@ impl GameObjectManager {
         door_collision_ranges: &[(String, usize, usize)],
         collision_positions: &[cgmath::Vector3<f32>],
         scale: f32,
+        creature_anim_data: &[(usize, Vec<u32>, Vec<u32>, u32)],
     ) -> Self {
         let mut mgr = Self::new();
 
@@ -281,9 +282,21 @@ impl GameObjectManager {
                         || abc.type_name.starts_with("CFortunado")
                         || abc.type_name.starts_with("CRoly")
                     {
-                        mgr.objects.push(GameObject::Creature(
-                            CCreature::parse(pos, dg, &abc.type_name),
-                        ));
+                        let mut creature = CCreature::parse(pos, dg, &abc.type_name);
+                        // Set up animation data if available
+                        if let Some((_, kf_indices, kf_times, duration)) =
+                            creature_anim_data.iter().find(|(idx, _, _, _)| *idx == i)
+                        {
+                            let index_count = abc.mesh.indices.len() as u32;
+                            CCreature::set_animation(
+                                &mut creature,
+                                kf_indices.clone(),
+                                index_count,
+                                kf_times,
+                                *duration,
+                            );
+                        }
+                        mgr.objects.push(GameObject::Creature(creature));
                     }
                 }
             }
@@ -383,6 +396,7 @@ impl GameObjectManager {
                 GameObject::Torch(t) => CTorch::update(t, dt, player_pos, draw_groups),
                 GameObject::SkyModel(sky) => sky.update(dt, draw_groups),
                 GameObject::Pickup(p) => CPickupItem::update(p, dt, _time, draw_groups),
+                GameObject::Creature(c) => CCreature::update(c, dt, draw_groups),
                 _ => {}
             }
         }
@@ -633,6 +647,19 @@ impl GameObjectManager {
         } else {
             0.0
         }
+    }
+
+    // ── Shadow caster export ──────────────────────────────────────────────
+
+    /// Returns world-space positions of all creatures for blob shadow casting.
+    pub fn shadow_caster_positions(&self) -> Vec<[f32; 3]> {
+        let mut out = Vec::new();
+        for obj in &self.objects {
+            if let GameObject::Creature(c) = obj {
+                out.push(c.position);
+            }
+        }
+        out
     }
 
     // ── Dynamic light export ─────────────────────────────────────────────────
