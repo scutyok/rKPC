@@ -42,17 +42,18 @@ It started as a [DLL injection project/D3D9 hook](http://https://github.com/scut
 
 <h2>Keybinds</h2>
 
-| Key           | Function               |
-| ------------- | ---------------------- |
-| W             | Move forward           |
-| S             | Move backwards         |
-| A             | Strafe left            |
-| D             | Strafe right           |
-| Space         | Ascend/Jump            |
-| Shift         | Descend                |
-| F1            | Open Debug menu        |
-| ESC           | Unlock the cursor      |
-| E             | Interact               |
+| Key           | Function                      |
+| ------------- | ----------------------------- |
+| W             | Move forward                  |
+| S             | Move backwards                |
+| A             | Strafe left                   |
+| D             | Strafe right                  |
+| Space         | Ascend/Jump                   |
+| Shift         | Descend                       |
+| F1            | Open Debug menu               |
+| F2            | Show triggers volume nodes    |
+| ESC           | Unlock the cursor             |
+| E             | Interact                      |
 
 <h2>Thanks to</h2>
 
