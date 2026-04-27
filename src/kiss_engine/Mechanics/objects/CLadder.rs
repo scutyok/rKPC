@@ -1,11 +1,15 @@
-//! CLadder — climbable ladder zone.
-//!
-//! While the player is inside the volume:
-//!   * Gravity is zeroed.
-//!   * W/S move the player vertically.
-//!
-//! No mesh / draw group — purely a physics zone.
-//! Volume half-extents are read from the `Dims` DAT property.
+//******************************************************************/
+//
+// CLadder — climbable ladder zone.
+//
+// While the player is inside the volume:
+//   * Gravity is zeroed.
+//  * W/S move the player vertically.
+//
+// No mesh / draw group — purely a physics zone.
+// Volume half-extents are read from the `Dims` DAT property.
+//
+//******************************************************************/
 
 use crate::dat::{PropertyValue, WorldObject};
 
@@ -26,7 +30,11 @@ impl LadderObject {
     }
 }
 
-// ─── DAT construction ────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// DAT construction 
+//
+//******************************************************************/
 
 pub fn parse(pos: [f32; 3], props: Option<&WorldObject>, scale: f32) -> LadderObject {
     let ext = props

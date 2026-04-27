@@ -1,6 +1,10 @@
-//! CCrate — destructible crate.
-//!
-//! Health defaults to 35. On destruction the draw group is hidden.
+//******************************************************************/
+//
+// CCrate — destructible crate.
+//
+// Health defaults to 35. On destruction the draw group is hidden.
+//
+//******************************************************************/
 
 use crate::dat::WorldObject;
 use crate::object_utils::{hide_draw_group, prop_float};
@@ -37,7 +41,11 @@ impl CrateObject {
     }
 }
 
-// ─── DAT construction ────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// DAT construction
+//
+//******************************************************************/
 
 pub fn parse(pos: [f32; 3], props: Option<&WorldObject>, draw_group: usize) -> CrateObject {
     CrateObject {
@@ -48,7 +56,11 @@ pub fn parse(pos: [f32; 3], props: Option<&WorldObject>, draw_group: usize) -> C
     }
 }
 
-// ─── Per-frame update ────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// Per-frame update
+//
+//******************************************************************/
 
 /// Apply newly-confirmed destruction: hide the draw group.
 /// Called by the manager after `apply_damage` returns `true`.

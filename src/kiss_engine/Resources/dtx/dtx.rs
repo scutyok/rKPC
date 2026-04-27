@@ -1,18 +1,31 @@
-//DTX Texture Reader for KISS
+//******************************************************************/
 //
-//supports reading DTX textures from KISS Psycho Circus (only lithtech 1.5 game)
+// DTX Texture Reader for KISS
+//
+// supports reading DTX textures from KISS Psycho Circus (only lithtech 1.5 game)
+//
+//******************************************************************/
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::fs::File;
 use std::io::{BufReader, Read, Result, Seek};
 use std::path::Path;
 
+//******************************************************************/
+//
 // DTX version constants (stored as signed but read as unsigned)
+//
+//******************************************************************/
+
 pub const DTX_VERSION_LT1: u32 = 0xFFFFFFFE;   // -2 as u32
 pub const DTX_VERSION_LT15: u32 = 0xFFFFFFFD;  // -3 as u32
 pub const DTX_VERSION_LT2: u32 = 0xFFFFFFFB;   // -5 as u32
 
+//******************************************************************/
+//
 // Bytes per pixel types
+//
+//******************************************************************/
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BppType {
     Bpp8Palette = 0,
@@ -41,7 +54,11 @@ impl BppType {
     }
 }
 
-/// DTX texture file
+//******************************************************************/
+//
+// DTX texture file
+//
+//******************************************************************/
 #[derive(Debug)]
 pub struct DtxFile {
     /// Resource type (usually 0)
@@ -583,7 +600,12 @@ impl DtxFile {
     }
 }
 
-/// Search for a DTX file in a texture folder by name
+//******************************************************************/
+//
+// Search for a DTX file in a texture folder by name
+//
+//******************************************************************/
+
 pub fn find_dtx_file(textures_root: &Path, texture_name: &str) -> Option<std::path::PathBuf> {
     // Clean up texture name (remove path separators, make uppercase)
     let clean_name = texture_name

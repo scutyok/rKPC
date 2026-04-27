@@ -1,17 +1,21 @@
-//! CDoorSliding — proximity-triggered or switch-triggered sliding door.
-//!
-//! State machine:
-//!   Closed → Opening (slide at DOOR_SLIDE_SPEED Vulkan units/s)
-//!          → Open   (holds for 3 s when auto_close is set)
-//!          → Closing (reverse slide)
-//!          → Closed
-//!
-//! DAT properties read:
-//!   `SlideDir`       (Vector3) — direction to slide in Lithtech coords.
-//!   `SlideDistance`  (Float)   — total travel distance (Lithtech units × scale).
-//!   `TriggerRadius`  (Float)   — auto-open radius (Lithtech units × scale).
-//!   `TriggerTarget`  (String)  — switch name that opens this door.
-//!   `AutoClose`      (Bool)    — whether door closes again after 3 s.
+//******************************************************************/
+//
+// CDoorSliding — proximity-triggered or switch-triggered sliding door.
+//
+// State machine:
+//   Closed → Opening (slide at DOOR_SLIDE_SPEED Vulkan units/s)
+//          → Open   (holds for 3 s when auto_close is set)
+//          → Closing (reverse slide)
+//          → Closed
+//
+// DAT properties read:
+//   `SlideDir`       (Vector3) — direction to slide in Lithtech coords.
+//   `SlideDistance`  (Float)   — total travel distance (Lithtech units × scale).
+//   `TriggerRadius`  (Float)   — auto-open radius (Lithtech units × scale).
+//   `TriggerTarget`  (String)  — switch name that opens this door.
+//   `AutoClose`      (Bool)    — whether door closes again after 3 s.
+//
+//******************************************************************/
 
 use cgmath::{Matrix4, vec3};
 
@@ -22,7 +26,11 @@ use crate::types::DrawGroup;
 
 const DOOR_SLIDE_SPEED: f32 = 3.0; // Vulkan units/s
 
-// ─── State ────────────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// State
+//
+//******************************************************************/
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DoorState {
@@ -32,7 +40,11 @@ pub enum DoorState {
     Closing { progress: f32 },
 }
 
-// ─── DoorObject ────────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// DoorObject
+//
+//******************************************************************/
 
 #[derive(Debug, Clone)]
 pub struct DoorObject {
@@ -98,7 +110,11 @@ impl DoorObject {
     }
 }
 
-// ─── DAT construction ────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// DAT construction
+//
+//******************************************************************/
 
 pub fn parse(
     pos: [f32; 3],
@@ -149,7 +165,11 @@ pub fn parse(
     }
 }
 
-// ─── Per-frame update ────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// Per-frame update
+//
+//******************************************************************/
 
 pub fn update(
     door: &mut DoorObject,

@@ -1,12 +1,16 @@
-//! CTorch — decorative torch that emits a flickering point light and an
-//! animated billboard flame sprite.
-//!
-//! Flame textures: REZ/SPRITETEXTURES/FLAMETEST/TORCH1-6.DTX (6 frames @ ~12 fps).
-//! Light colour  : orange (1.0, 0.55, 0.1).
-//! Light radius  : 6.0 Vulkan units (~600 Lithtech units).
-//!
-//! DAT properties read:
-//!   `LightIntensity` (Float) — base light intensity (default 1.5).
+//******************************************************************/
+//
+// CTorch — decorative torch that emits a flickering point light and an
+// animated billboard flame sprite.
+//
+// Flame textures: REZ/SPRITETEXTURES/FLAMETEST/TORCH1-6.DTX (6 frames @ ~12 fps).
+// Light colour  : orange (1.0, 0.55, 0.1).
+// Light radius  : 6.0 Vulkan units (~600 Lithtech units).
+//
+// DAT properties read:
+//   `LightIntensity` (Float) — base light intensity (default 1.5).
+//
+//******************************************************************/
 
 use cgmath::{Matrix4, Rad, vec3};
 

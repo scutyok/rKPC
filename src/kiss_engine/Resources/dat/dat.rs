@@ -1,7 +1,11 @@
-//DAT file structures and parsing for KISS Psycho Circus: The Nightmare Child
+//******************************************************************/
 //
-//file format version: 127 (BSP/World version)
-//this module handles reading .DAT world files used by the Lithtech 1.5 engine (only kiss)
+// DAT file structures and parsing for KISS Psycho Circus: The Nightmare Child
+//
+// file format version: 127 (BSP/World version)
+// this module handles reading .DAT world files used by the Lithtech 1.5 engine (only kiss)
+//
+//******************************************************************/
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::fs::File;
@@ -29,9 +33,11 @@ pub enum DatError {
 
 pub type Result<T> = std::result::Result<T, DatError>;
 
+//******************************************************************/
 //
 // Basic Types
 //
+//******************************************************************/
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Vector3 {
@@ -107,9 +113,11 @@ pub struct Quaternion {
     pub w: f32,
 }
 
+//******************************************************************/
 //
 // World Header
 //
+//******************************************************************/
 
 #[derive(Debug, Default)]
 pub struct WorldHeader {
@@ -118,9 +126,12 @@ pub struct WorldHeader {
     pub render_data_pos: u32,
 }
 
+
+//******************************************************************/
 //
 // World Info
 //
+//******************************************************************/
 
 #[derive(Debug, Default)]
 pub struct WorldInfo {
@@ -129,18 +140,24 @@ pub struct WorldInfo {
     pub padding: [u32; 8],
 }
 
+
+//******************************************************************/
 //
 // World Texture
 //
+//******************************************************************/
 
 #[derive(Debug, Clone, Default)]
 pub struct WorldTexture {
     pub name: String,
 }
 
+
+//******************************************************************/
 //
 // World Plane
 //
+//******************************************************************/
 
 #[derive(Debug, Clone, Default)]
 pub struct WorldPlane {
@@ -148,9 +165,12 @@ pub struct WorldPlane {
     pub distance: f32,
 }
 
+
+//******************************************************************/
 //
 // World Surface - Contains UV mapping and texture info
 //
+//******************************************************************/
 
 #[derive(Debug, Clone, Default)]
 pub struct WorldSurface {
@@ -190,9 +210,12 @@ impl WorldSurface {
     }
 }
 
+
+//******************************************************************/
 //
 // World Leaf - BSP leaf nodes containing visibility data
 //
+//******************************************************************/
 
 #[derive(Debug, Clone, Default)]
 pub struct LeafData {
@@ -211,9 +234,11 @@ pub struct WorldLeaf {
     pub unknown: f32,
 }
 
+//******************************************************************/
 //
 // World Polygon - Individual polygon with vertex indices
 //
+//******************************************************************/
 
 #[derive(Debug, Clone, Default)]
 pub struct DiskVert {
@@ -234,9 +259,11 @@ pub struct WorldPoly {
     pub disk_verts: Vec<DiskVert>,
 }
 
+//******************************************************************/
 //
 // World Node - BSP tree nodes
 //
+//******************************************************************/
 
 #[derive(Debug, Clone, Default)]
 pub struct WorldNode {
@@ -248,9 +275,11 @@ pub struct WorldNode {
     pub unknown_quat: Quaternion,
 }
 
+//******************************************************************/
 //
 // World User Portal
 //
+//******************************************************************/
 
 #[derive(Debug, Clone, Default)]
 pub struct WorldUserPortal {
@@ -261,9 +290,11 @@ pub struct WorldUserPortal {
     pub dims: Vector3,
 }
 
+//******************************************************************/
 //
 // PBlock Table - Collision/physics data
 //
+//******************************************************************/
 
 #[derive(Debug, Clone, Default)]
 pub struct PBlockContents {
@@ -287,9 +318,11 @@ pub struct PBlockTable {
     pub blocks: Vec<PBlock>,
 }
 
+//******************************************************************/
 //
 // World BSP
 //
+//******************************************************************/
 
 #[derive(Debug, Default)]
 pub struct WorldBsp {
@@ -343,9 +376,11 @@ pub struct WorldBsp {
     pub section_count: u32,
 }
 
+//******************************************************************/
 //
 // Object Property
 //
+//******************************************************************/
 
 #[derive(Debug, Clone)]
 pub enum PropertyValue {
@@ -369,9 +404,11 @@ pub struct ObjectProperty {
     pub value: PropertyValue,
 }
 
+//******************************************************************/
 //
 // World Object - entities/objects placed in the world
 //
+//******************************************************************/
 
 #[derive(Debug, Clone, Default)]
 pub struct WorldObject {
@@ -406,9 +443,11 @@ impl WorldObject {
     }
 }
 
+//******************************************************************/
 //
 // Main DAT File Structure
 //
+//******************************************************************/
 
 #[derive(Debug, Default)]
 pub struct DatFile {
@@ -418,9 +457,11 @@ pub struct DatFile {
     pub world_models: Vec<WorldBsp>,
 }
 
+//******************************************************************/
 //
 // Reading Implementation
 //
+//******************************************************************/
 
 impl DatFile {
     pub fn read_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
@@ -999,9 +1040,11 @@ impl WorldObject {
     }
 }
 
+//******************************************************************/
 //
 // Helper Functions
 //
+//******************************************************************/
 
 /// Read a world model entry (with the next_pos header and padding)
 fn read_world_model_entry<R: Read + Seek>(reader: &mut R) -> Result<WorldBsp> {

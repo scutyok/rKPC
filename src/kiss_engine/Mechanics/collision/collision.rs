@@ -1,8 +1,11 @@
 use cgmath::{Vector3, InnerSpace};
 
-// ------------------------------------------------------------------ //
+//******************************************************************/
+//
 // Constants matching collision.cpp
-// ------------------------------------------------------------------ //
+//
+//******************************************************************/
+
 
 const MAX_PHYSICS_ITERATIONS: usize = 40;
 #[allow(dead_code)]
@@ -15,17 +18,23 @@ const PLAYER_HALF_HEIGHT: f32 = 0.35;
 const STAIR_ALLOW_UP_LIMIT: f32 = 0.7071; // cos(45°) — steepest walkable surface
 
 
-// ------------------------------------------------------------------ //
+//******************************************************************/
+//
 // PolySide — matches the C++ FrontSide / BackSide / Intersect enum
-// ------------------------------------------------------------------ //
+//
+//******************************************************************/
+
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum PolySide { FrontSide, BackSide, Intersect }
 
 
-// ------------------------------------------------------------------ //
+//******************************************************************/
+//
 // Aabb — axis-aligned bounding box (kept from original, matching C++ AABB)
-// ------------------------------------------------------------------ //
+//
+//******************************************************************/
+
 
 #[derive(Clone, Copy, Debug)]
 pub struct Aabb {
@@ -68,9 +77,15 @@ impl Aabb {
 mod bvh;
 
 
-// ------------------------------------------------------------------ //
+//******************************************************************/
+//
 // EntityCylinder — upright cylinder collider for barrels/creatures
-// ------------------------------------------------------------------ //
+//
+//
+// TODO: change this to a box instead of a cylinder (enemies should be climbable so do the barrels)
+//
+//******************************************************************/
+
 
 /// A vertical cylinder used for entity collision (barrels, headless, etc.).
 /// Axis is along Z (Vulkan up). Collision is resolved radially in XY for
@@ -85,9 +100,11 @@ pub struct EntityCylinder {
 }
 
 
-// ------------------------------------------------------------------ //
+//******************************************************************/
+//
 // PhysicsSphere — bounding sphere for quick culling
-// ------------------------------------------------------------------ //
+//
+//******************************************************************/
 
 #[derive(Clone, Copy, Debug)]
 pub struct PhysicsSphere {
@@ -96,9 +113,11 @@ pub struct PhysicsSphere {
 }
 
 
-// ------------------------------------------------------------------ //
+//******************************************************************/
+//
 // Segment — matches SBlockerSeg from world_blocker_math
-// ------------------------------------------------------------------ //
+//
+//******************************************************************/
 
 #[derive(Clone, Debug)]
 struct Segment {
@@ -107,12 +126,14 @@ struct Segment {
 }
 
 
-// ------------------------------------------------------------------ //
+//******************************************************************/
+//
 // dist_sqr_seg_seg — squared distance between two line segments.
 // Matches DistSqrSegSeg() from world_blocker_math.cpp.
 // Returns the squared distance; fills out_p0 / out_p1 with the
 // parameter values [0,1] at the closest points on each segment.
-// ------------------------------------------------------------------ //
+//
+//******************************************************************/
 
 fn dist_sqr_seg_seg(s0: &Segment, s1: &Segment, out_p0: &mut f32, out_p1: &mut f32) -> f32 {
 	let d1 = s0.direction;
@@ -173,11 +194,13 @@ fn dist_sqr_seg_seg(s0: &Segment, s1: &Segment, out_p0: &mut f32, out_p1: &mut f
 }
 
 
-// ------------------------------------------------------------------ //
+//******************************************************************/
+//
 // clip_poly_to_z_range — clips a convex polygon to a Z slab.
 // Adapted from ClipPolyToYRange() in collision.cpp (Y-up → Z-up).
 // Returns true if any vertices remain after clipping.
-// ------------------------------------------------------------------ //
+//
+//******************************************************************/
 
 fn clip_poly_to_z_range(input: &[Vector3<f32>], output: &mut Vec<Vector3<f32>>, min_z: f32, max_z: f32) -> bool {
 	output.clear();
@@ -225,10 +248,12 @@ fn clip_poly_to_z_range(input: &[Vector3<f32>], output: &mut Vec<Vector3<f32>>, 
 }
 
 
-// ------------------------------------------------------------------ //
+//******************************************************************/
+//
 // MovingCylinder — adapted from CMovingCylinder in collision.cpp.
 // Z-up: height along Z axis, radius in XY plane.
-// ------------------------------------------------------------------ //
+//
+//******************************************************************/
 
 struct MovingCylinder {
 	// --- Provided members ---
@@ -558,9 +583,11 @@ impl MovingCylinder {
 }
 
 
-// ------------------------------------------------------------------ //
+//******************************************************************/
+//
 // HeightProvider trait & FlatGround
-// ------------------------------------------------------------------ //
+////******************************************************************/
+//******************************************************************/
 
 pub trait HeightProvider: Send + Sync {
 	fn ground_height(&self, x: f32, y: f32, current_z: Option<f32>) -> f32;
@@ -576,17 +603,21 @@ impl HeightProvider for FlatGround {
 }
 
 
-// ------------------------------------------------------------------ //
+//******************************************************************/
+//
 // PlayerMode
-// ------------------------------------------------------------------ //
+//
+//******************************************************************/
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlayerMode { Flying, Walk }
 
 
-// ------------------------------------------------------------------ //
+//******************************************************************/
+//
 // resolve_player_collision — vertical ground correction
-// ------------------------------------------------------------------ //
+//
+//******************************************************************/
 
 pub fn resolve_player_collision(pos: &mut Vector3<f32>, height_provider: &dyn HeightProvider, player_radius: f32, step_height: f32) {
 	let ground_z = height_provider.ground_height(pos.x, pos.y, Some(pos.z));
@@ -602,9 +633,11 @@ pub fn resolve_player_collision(pos: &mut Vector3<f32>, height_provider: &dyn He
 }
 
 
-// ------------------------------------------------------------------ //
+//******************************************************************/
+//
 // MeshHeightProvider
-// ------------------------------------------------------------------ //
+//
+//******************************************************************/
 
 #[derive(Clone)]
 pub struct MeshHeightProvider {
@@ -1145,9 +1178,11 @@ impl MeshHeightProvider {
 }
 
 
-// ------------------------------------------------------------------ //
+//******************************************************************/
+//
 // closest_point_on_triangle — barycentric projection (kept from original)
-// ------------------------------------------------------------------ //
+//
+//******************************************************************/
 
 #[allow(dead_code)]
 fn closest_point_on_triangle(p: Vector3<f32>, a: Vector3<f32>, b: Vector3<f32>, c: Vector3<f32>) -> Vector3<f32> {
@@ -1194,9 +1229,11 @@ fn closest_point_on_triangle(p: Vector3<f32>, a: Vector3<f32>, b: Vector3<f32>, 
 }
 
 
-// ------------------------------------------------------------------ //
+//******************************************************************/
+//
 // HeightProvider for MeshHeightProvider (ground ray-cast — kept from original)
-// ------------------------------------------------------------------ //
+//
+//******************************************************************/
 
 impl HeightProvider for MeshHeightProvider {
 	fn ground_height(&self, x: f32, y: f32, current_z: Option<f32>) -> f32 {

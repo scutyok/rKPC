@@ -1,12 +1,16 @@
-//! CWater / CWaterVolume — axis-aligned water volume.
-//!
-//! While the player is inside:
-//!   * Gravity is reduced to 25 % of normal.
-//!   * Movement speed is halved.
-//!   * Jump acts as a swim-up impulse.
-//!
-//! No mesh / draw group — purely a physics zone.
-//! Volume half-extents are read from the `Dims` DAT property.
+//******************************************************************/
+//
+// CWater / CWaterVolume — axis-aligned water volume.
+//
+// While the player is inside:
+//  * Gravity is reduced to 25 % of normal.
+//  * Movement speed is halved.
+//  * Jump acts as a swim-up impulse.
+//
+// No mesh / draw group — purely a physics zone.
+// Volume half-extents are read from the `Dims` DAT property.
+//
+//******************************************************************/
 
 use crate::dat::{PropertyValue, WorldObject};
 
@@ -27,7 +31,11 @@ impl WaterObject {
     }
 }
 
-// ─── DAT construction ────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// DAT construction
+//
+//******************************************************************/
 
 pub fn parse(pos: [f32; 3], props: Option<&WorldObject>, scale: f32) -> WaterObject {
     let ext = props

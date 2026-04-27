@@ -1,6 +1,12 @@
 use crate::dat::{WorldObject, PropertyValue};
 
-/// A point light extracted from the DAT file, in Vulkan world coordinates (scaled).
+
+//******************************************************************/
+//
+// A point light extracted from the DAT file, in Vulkan world coordinates (scaled).
+//
+//******************************************************************/
+
 #[derive(Debug, Clone, Copy)]
 pub struct Light {
     /// World-space position (Vulkan coords: X=LithtechX, Y=LithtechZ, Z=LithtechY, all * scale)
@@ -13,10 +19,15 @@ pub struct Light {
     pub intensity: f32,
 }
 
-/// Extract all Light objects from DAT world objects, converting to Vulkan coordinates.
-///
-/// The coordinate swap matches dat_mesh.rs: Lithtech (X,Y,Z) → Vulkan (X, Z, Y).
-/// Positions and radii are multiplied by `scale` (typically 0.01).
+//******************************************************************/
+//
+// Extract all Light objects from DAT world objects, converting to Vulkan coordinates.
+//
+// The coordinate swap matches dat_mesh.rs: Lithtech (X,Y,Z) → Vulkan (X, Z, Y).
+// Positions and radii are multiplied by `scale` (typically 0.01).
+//
+//******************************************************************/
+
 pub fn extract_lights_from_objects(objects: &[WorldObject], scale: f32) -> Vec<Light> {
     let mut lights = Vec::new();
 

@@ -1,6 +1,10 @@
-//egui renderer for Vulkan using vulkanalia
+//******************************************************************/
 //
-//this module provides egui integration
+//  egui renderer for Vulkan using vulkanalia
+//
+//  this module provides egui integration
+//
+//******************************************************************/
 
 use anyhow::{anyhow, Result};
 use std::mem::size_of;
@@ -8,7 +12,12 @@ use std::ptr::copy_nonoverlapping as memcpy;
 use vulkanalia::bytecode::Bytecode;
 use vulkanalia::prelude::v1_0::*;
 
-/// Vertex format for egui rendering (matches shader input)
+//******************************************************************/
+//
+// Vertex format for egui rendering (matches shader input)
+//
+//******************************************************************/
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EguiVertex {
@@ -17,7 +26,12 @@ pub struct EguiVertex {
     pub color: [u8; 4],
 }
 
-/// egui Vulkan renderer
+//******************************************************************/
+//
+// egui Vulkan renderer
+//
+//******************************************************************/
+
 pub struct EguiRenderer {
     // Own render pass for egui (loads existing content, renders UI on top)
     render_pass: vk::RenderPass,
@@ -640,7 +654,12 @@ impl EguiRenderer {
     }
 }
 
-/// Create the egui rendering pipeline
+//******************************************************************/
+//
+// Create the egui rendering pipeline
+//
+//******************************************************************/
+
 unsafe fn create_egui_pipeline(
     device: &Device,
     render_pass: vk::RenderPass,
@@ -779,7 +798,11 @@ unsafe fn create_shader_module(device: &Device, code: &[u8]) -> Result<vk::Shade
     Ok(device.create_shader_module(&info, None)?)
 }
 
-/// Create a texture for egui (font atlas)
+//******************************************************************/
+//
+// Create a texture for egui (font atlas)
+//
+//******************************************************************/
 unsafe fn create_texture(
     instance: &Instance,
     device: &Device,
@@ -1056,7 +1079,13 @@ unsafe fn end_single_time_commands(
 
     Ok(())
 }
-/// Create egui render pass that loads existing content and renders UI on top
+
+//******************************************************************/
+//
+// Create egui render pass that loads existing content and renders UI on top
+//
+//******************************************************************/
+
 unsafe fn create_egui_render_pass(device: &Device, format: vk::Format) -> Result<vk::RenderPass> {
     // Single color attachment that loads existing content
     let color_attachment = vk::AttachmentDescription::builder()
@@ -1099,7 +1128,12 @@ unsafe fn create_egui_render_pass(device: &Device, format: vk::Format) -> Result
     Ok(render_pass)
 }
 
-/// Create framebuffers for egui render pass
+//******************************************************************/
+//
+// Create framebuffers for egui render pass
+//
+//******************************************************************/
+
 unsafe fn create_egui_framebuffers(
     device: &Device,
     render_pass: vk::RenderPass,

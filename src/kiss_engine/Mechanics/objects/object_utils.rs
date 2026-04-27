@@ -1,14 +1,22 @@
-//! Shared utility functions for all game-object modules.
-//!
-//! Provides DAT property readers, draw-group helpers, and math utilities that
-//! every per-object file can import without circular dependencies.
+//******************************************************************/
+// 
+// Shared utility functions for all game-object modules.
+//
+// Provides DAT property readers, draw-group helpers, and math utilities that
+// every per-object file can import without circular dependencies.
+//
+//******************************************************************/
 
 use cgmath::Matrix4;
 
 use crate::dat::{PropertyValue, WorldObject};
 use crate::types::DrawGroup;
 
-// ─── DAT property readers ────────────────────────────────────────────────────
+//******************************************************************/
+//
+// DAT property readers
+//
+//******************************************************************/
 
 pub fn prop_float(obj: Option<&WorldObject>, name: &str, default: f32) -> f32 {
     obj.and_then(|o| o.get_property(name))
@@ -28,16 +36,25 @@ pub fn prop_string(obj: Option<&WorldObject>, name: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Read a Vector3 / Color property and return it as `[x, y, z]`, or `None`.
-pub fn prop_vector(obj: Option<&WorldObject>, name: &str) -> Option<[f32; 3]> {
+//******************************************************************/
+//
+// Read a Vector3 / Color property and return it as `[x, y, z]`, or `None`.
+//
+//******************************************************************/
+
+/*pub fn prop_vector(obj: Option<&WorldObject>, name: &str) -> Option<[f32; 3]> {
     obj.and_then(|o| o.get_property(name))
         .and_then(|v| match v {
             PropertyValue::Vector(c) | PropertyValue::Color(c) => Some([c.x, c.y, c.z]),
             _ => None,
         })
-}
+}*/
 
-// ─── Draw-group helpers ───────────────────────────────────────────────────────
+//******************************************************************/
+//
+// Draw-group helpers
+//
+//******************************************************************/
 
 /// Set a draw group's `index_count` to 0, hiding it from the renderer.
 pub fn hide_draw_group(draw_groups: &mut Vec<DrawGroup>, idx: usize) {
@@ -57,7 +74,11 @@ pub fn set_draw_group_matrix(
     }
 }
 
-// ─── Math helpers ─────────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// Math helpers
+//
+//******************************************************************/
 
 /// Euclidean distance between two 3-D points.
 #[inline]
@@ -68,7 +89,7 @@ pub fn dist3(a: [f32; 3], b: [f32; 3]) -> f32 {
     (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
-/// Convert a `cgmath::Matrix4<f32>` to a raw `[[f32; 4]; 4]` push-constant array.
+// Convert a `cgmath::Matrix4<f32>` to a raw `[[f32; 4]; 4]` push-constant array.
 #[inline]
 pub fn matrix4_to_array(m: Matrix4<f32>) -> [[f32; 4]; 4] {
     [
@@ -79,7 +100,7 @@ pub fn matrix4_to_array(m: Matrix4<f32>) -> [[f32; 4]; 4] {
     ]
 }
 
-/// Linearly interpolate `remaining / total`, clamped to [0, 1].
+// Linearly interpolate `remaining / total`, clamped to [0, 1].
 #[inline]
 pub fn time_to_fraction(remaining: f32, total: f32) -> f32 {
     if total <= 0.0 {

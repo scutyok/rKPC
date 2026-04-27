@@ -119,9 +119,9 @@ pub struct UniformBufferObject {
 #[repr(C, align(16))]
 #[derive(Copy, Clone, Debug)]
 pub struct GpuLight {
-    /// xyz = position, w = radius² (for squared-distance early-out)
+    // xyz = position, w = radius² (for squared-distance early-out)
     pub position_radius_sq: [f32; 4],
-    /// rgb = color * intensity (pre-multiplied), w = 1/radius (for attenuation)
+    // rgb = color * intensity (pre-multiplied), w = 1/radius (for attenuation)
     pub color_intensity: [f32; 4],
 }
 
@@ -130,9 +130,9 @@ pub struct GpuLight {
 pub struct LightingUBO {
     pub camera_pos: [f32; 4],
     pub ambient: [f32; 4],
-    /// rgb = fog colour, a = unused
+    // rgb = fog colour, a = unused
     pub fog_color: [f32; 4],
-    /// x = fog near distance, y = fog far distance, z = 1.0 if enabled / 0.0 if disabled, w = unused
+    // x = fog near distance, y = fog far distance, z = 1.0 if enabled / 0.0 if disabled, w = unused
     pub fog_params: [f32; 4],
     pub light_count: u32,
     pub _pad: [u32; 3],
@@ -171,9 +171,9 @@ pub struct DrawGroup {
     pub first_index: u32,
     pub index_count: u32,
     pub vertex_offset: i32,
-    /// Per-object model matrix applied as push constant before this draw call.
-    /// None = identity (world-geometry default). Set by game_objects system for
-    /// animated objects (doors, fans) and cleared for destroyed objects.
+    // Per-object model matrix applied as push constant before this draw call.
+    // None = identity (world-geometry default). Set by game_objects system for
+    // animated objects (doors, fans) and cleared for destroyed objects.
     pub model_matrix: Option<[[f32; 4]; 4]>,
 }
 

@@ -1,11 +1,15 @@
-//! CRotatingCeilingFan — continuously spinning ceiling fan (BSP sub-model).
-//!
-//! The fan is a BSP world model (not an ABC model), so it has one or more
-//! `draw_groups` rather than a single index.  Its rotation pivot is the
-//! geometric centroid of its own mesh (computed by `world_loader`).
-//!
-//! The rotation speed is read from the `RotateSpeed` DAT property (rad/s).
-//! Default speed is 1.5 full revolutions/s.
+//******************************************************************/
+//
+// CRotatingCeilingFan — continuously spinning ceiling fan (BSP sub-model).
+//
+// The fan is a BSP world model (not an ABC model), so it has one or more
+// `draw_groups` rather than a single index.  Its rotation pivot is the
+// geometric centroid of its own mesh (computed by `world_loader`).
+//
+// The rotation speed is read from the `RotateSpeed` DAT property (rad/s).
+// Default speed is 1.5 full revolutions/s.
+//
+//******************************************************************/
 
 use cgmath::{Matrix4, Rad, vec3};
 

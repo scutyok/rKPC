@@ -1,7 +1,11 @@
-//! CWindow / CWindowShattering — destructible glass window.
-//!
-//! Health defaults to 20. On destruction the draw group is hidden.
-//! A future extension can spawn glass-shard particles.
+//******************************************************************/
+//
+// CWindow / CWindowShattering — destructible glass window.
+//
+// Health defaults to 20. On destruction the draw group is hidden.
+// A future extension can spawn glass-shard particles.
+//
+//******************************************************************/
 
 use crate::dat::WorldObject;
 use crate::object_utils::{hide_draw_group, prop_float};
@@ -37,7 +41,11 @@ impl WindowObject {
     }
 }
 
-// ─── DAT construction ────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// DAT construction
+//
+//******************************************************************/
 
 pub fn parse(pos: [f32; 3], props: Option<&WorldObject>, draw_group: usize) -> WindowObject {
     WindowObject {
@@ -48,7 +56,11 @@ pub fn parse(pos: [f32; 3], props: Option<&WorldObject>, draw_group: usize) -> W
     }
 }
 
-// ─── Event ───────────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// Event
+//
+//******************************************************************/
 
 pub fn on_break(window: &WindowObject, draw_groups: &mut Vec<DrawGroup>) {
     hide_draw_group(draw_groups, window.draw_group);

@@ -26,7 +26,6 @@ use rustKPC::egui_renderer;
 use rustKPC::game_objects::GameObjectManager;
 use rustKPC::LightObj;
 use rustKPC::LightingUbo;
-use rustKPC::OcclusionCulling::{Frustum, OcclusionCuller};
 use rustKPC::CPlayerMovement::{self, MovementState};
 use rustKPC::CameraObj::{Camera, InputState};
 use rustKPC::types::*;
@@ -34,7 +33,11 @@ use rustKPC::vulkan;
 use rustKPC::world_chooser::{LoadingState, WorldChooser};
 use rustKPC::world_loader::load_dat_model;
 
-/// Our Vulkan app.
+//******************************************************************/
+//
+// Our Vulkan app.
+//
+//******************************************************************/
 pub struct App {
     pub entry: Entry,
     pub instance: Instance,
@@ -95,7 +98,12 @@ pub struct App {
 }
 
 impl App {
-    /// Creates our Vulkan app.
+    
+    //******************************************************************/
+    //
+    // Creates our Vulkan app.
+    //
+    //******************************************************************/
     pub unsafe fn create(window: &Window) -> Result<Self> {
         let loader = LibloadingLoader::new(LIBRARY)?;
         let entry = Entry::new(loader).map_err(|b| anyhow!("{}", b))?;
@@ -246,8 +254,12 @@ impl App {
         Ok(app)
     }
 
-    /// Build a LightingUBO from a list of lights, shadow casters, and current fog settings.
-    /// Delegates to `lighting_ubo::build_light_ubo`.
+    //******************************************************************/
+    //
+    // Build a LightingUBO from a list of lights, shadow casters, and current fog settings.
+    // Delegates to `lighting_ubo::build_light_ubo`.
+    //
+    //******************************************************************/
     fn build_light_ubo(
         world_lights: &[LightObj::Light],
         shadow_positions: &[[f32; 3]],
@@ -260,15 +272,23 @@ impl App {
         LightingUbo::build_light_ubo(world_lights, shadow_positions, fog_color, fog_near, fog_far, fog_enabled, sky_fog_far)
     }
 
-    /// Upload the full cached light UBO to all swapchain images' persistently mapped memory.
-    /// Called once when lights change (map load / swapchain recreate).
+    //******************************************************************/
+    //
+    // Upload the full cached light UBO to all swapchain images' persistently mapped memory.
+    // Called once when lights change (map load / swapchain recreate).
+    //
+    //******************************************************************/
     unsafe fn upload_light_ubo_to_all(&self) {
         for mapped in &self.data.light_uniform_buffers_mapped {
             memcpy(&self.cached_light_ubo, (*mapped).cast(), 1);
         }
     }
 
-    /// Renders a frame for our Vulkan app.
+    //******************************************************************/
+    //
+    // Renders a frame for our Vulkan app.
+    //
+    //******************************************************************/
     pub unsafe fn render(
         &mut self,
         window: &Window,
@@ -346,7 +366,11 @@ impl App {
         Ok(())
     }
 
-    /// Updates a command buffer for our Vulkan app.
+    //******************************************************************/
+    //
+    // Updates a command buffer for our Vulkan app.
+    //
+    //******************************************************************/
     #[rustfmt::skip]
     unsafe fn update_command_buffer(
         &mut self,
@@ -393,7 +417,11 @@ impl App {
 
         self.device.cmd_begin_render_pass(command_buffer, &info, vk::SubpassContents::SECONDARY_COMMAND_BUFFERS);
 
+        //******************************************************************/
+        //
         // Run frustum culling
+        //
+        //******************************************************************/
         {
             let (cull_view, cull_fov) = if self.is_free_cam && self.freeze_culling {
                 if let Some(ref saved) = self.saved_player_camera {
@@ -446,7 +474,11 @@ impl App {
         Ok(())
     }
 
-    /// Updates a secondary command buffer for our Vulkan app.
+    //******************************************************************/
+    //
+    // Updates a secondary command buffer for our Vulkan app.
+    //
+    //******************************************************************/
     #[rustfmt::skip]
     unsafe fn update_secondary_command_buffer(
         &mut self,
@@ -578,7 +610,12 @@ impl App {
             }
         }
 
-        // === Pass 2: Draw world groups with normal pipeline (depth writes on) ===
+        //******************************************************************/
+        //
+        // Pass 2: Draw world groups with normal pipeline (depth writes on)
+        //
+        //******************************************************************/
+
         {
             self.device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.data.pipeline);
 
@@ -668,8 +705,12 @@ impl App {
         Ok(command_buffer)
     }
 
-    /// Updates camera position based on input state using Quake/Blood2-style
-    /// acceleration physics (ground friction, air-strafe, etc.).
+    //******************************************************************/
+    //
+    // Updates camera position based on input state using Quake/Blood2-style
+    // acceleration physics (ground friction, air-strafe, etc.).
+    //
+    //******************************************************************/
     pub fn update_camera(&mut self, dt: f32) {
         let front = self.camera.front();
         let right = self.camera.right();
@@ -696,7 +737,11 @@ impl App {
             return;
         }
 
-        // ── Walk mode: acceleration-based physics ────────────────────────
+        //******************************************************************/
+        //
+        // Walk mode: acceleration-based physics
+        //
+        //******************************************************************/
         let front_flat = {
             let len = (front.x * front.x + front.y * front.y).sqrt();
             if len > 1e-6 {
@@ -722,7 +767,11 @@ impl App {
         self.camera.position.y += delta[1];
         self.camera.position.z += delta[2];
 
-        // ── Collision resolution ──────────────────────────────────────
+        //******************************************************************/
+        //
+        // Collision resolution
+        //
+        //******************************************************************/
         const PLAYER_RADIUS: f32 = 0.20;
         const PLAYER_HALF_H: f32 = 0.35;
 
@@ -730,7 +779,11 @@ impl App {
             mesh.resolve_player_movement(prev_pos, &mut self.camera.position, PLAYER_RADIUS);
         }
 
-        // Push player out of entity cylinders (barrels, headless enemies).
+        //******************************************************************/
+        //
+        // Push player out of entity cylinders (barrels, headless enemies)
+        //
+        //******************************************************************/
         for cyl in &self.entity_cylinders {
             let player_z_min = self.camera.position.z - PLAYER_HALF_H;
             let player_z_max = self.camera.position.z + PLAYER_HALF_H;
@@ -750,7 +803,11 @@ impl App {
             }
         }
 
+        //******************************************************************/
+        //
         // Push player out of door AABBs
+        //
+        //******************************************************************/
         {
             let pr = PLAYER_RADIUS;
             let pz_min = self.camera.position.z - PLAYER_HALF_H;
@@ -782,7 +839,11 @@ impl App {
             }
         }
 
-        // ── Ground detection & Z resolution ──────────────────────────────
+        //******************************************************************/
+        //
+        // Ground detection & Z resolution
+        //
+        //******************************************************************/
         let _before_z = self.camera.position.z;
         collision::resolve_player_collision(
             &mut self.camera.position,
@@ -883,8 +944,12 @@ impl App {
             );
         }
     }
-
-    /// Tick all game objects, apply physics state-machines, and upload dynamic lights if needed.
+    
+    //******************************************************************/
+    //
+    // Tick all game objects, apply physics state-machines, and upload dynamic lights if needed.
+    //
+    //******************************************************************/
     pub unsafe fn update_objects(&mut self, dt: f32) {
         self.elapsed_time += dt;
         let player_pos = [
@@ -914,12 +979,16 @@ impl App {
         };
 
         {
+            //******************************************************************/
+            //
             // Build the combined lighting UBO (world + dynamic lights/shadows)
             // but do NOT write it directly into all persistently mapped
             // buffers here — writing to buffers that the GPU may currently
             // be reading can cause visual corruption. Instead store it in
             // `self.cached_light_ubo` and write only the per-frame mapping
             // for the active swapchain image in `update_uniform_buffer`.
+            //
+            //******************************************************************/
             let mut all_lights = self.world_lights.clone();
             all_lights.extend(dynamic);
             let combined_ubo = Self::build_light_ubo(
@@ -937,7 +1006,11 @@ impl App {
         }
     }
 
-    /// Handle E-key interaction: open nearby doors, activate switches.
+    //******************************************************************/
+    //
+    // Handle E-key interaction: open nearby doors, activate switches.
+    //
+    //******************************************************************/
     pub fn interact(&mut self) {
         let player_pos = [
             self.camera.position.x,
@@ -947,7 +1020,11 @@ impl App {
         self.game_objects.interact(player_pos, &mut self.data.draw_groups);
     }
 
-    /// Toggle visibility of trigger / volume sub-models (F2).
+    //******************************************************************/
+    //
+    // Toggle visibility of trigger / volume sub-models (F2).
+    //
+    //******************************************************************/
     pub fn toggle_triggers(&mut self) {
         self.show_triggers = !self.show_triggers;
         for &(dg_idx, original_count) in &self.trigger_draw_groups {
@@ -958,7 +1035,11 @@ impl App {
         log::info!("Triggers: {}", if self.show_triggers { "visible" } else { "hidden" });
     }
 
-    /// Run the egui UI
+    //******************************************************************/
+    //
+    // Run the egui UI
+    //
+    //******************************************************************/
     pub fn run_ui(&mut self, ctx: &egui::Context, mouse_locked: &mut bool) {
         // Loading screen
         if let LoadingState::Loading(ref map_name) = self.loading_state {
@@ -993,7 +1074,11 @@ impl App {
             return;
         }
 
+        //******************************************************************/
+        //
         // FPS counter
+        //
+        //******************************************************************/
         if self.show_fps {
             let painter = ctx.layer_painter(egui::LayerId::new(
                 egui::Order::Foreground,
@@ -1017,7 +1102,11 @@ impl App {
             painter.galley(text_pos, galley, egui::Color32::YELLOW);
         }
 
+        //******************************************************************/
+        //
         // Draw FOV debug rays when freeze culling is active in free cam
+        //
+        //******************************************************************/
         if self.is_free_cam && self.freeze_culling {
             if let Some(ref saved) = self.saved_player_camera {
                 let painter = ctx.layer_painter(egui::LayerId::new(
@@ -1093,7 +1182,11 @@ impl App {
             }
         }
 
+        //******************************************************************/
+        //
         // World chooser panel
+        //
+        //******************************************************************/
         if self.world_chooser.visible {
             egui::TopBottomPanel::top("world_chooser")
                 .frame(
@@ -1113,7 +1206,11 @@ impl App {
                         );
                     });
 
+                    //******************************************************************/
+                    //
                     // Settings toggles
+                    //
+                    //******************************************************************/
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new("Player Mode:")
@@ -1219,8 +1316,12 @@ impl App {
                     ui.add_space(5.0);
                     ui.separator();
                     ui.add_space(5.0);
-
-                    // ── Fog controls ─────────────────────────────────
+                    
+                    //******************************************************************/
+                    //
+                    // Fog controls
+                    //
+                    //******************************************************************/
                     ui.label(egui::RichText::new("Fog").color(egui::Color32::LIGHT_GRAY));
                     let fog_changed = {
                         let prev = self.fog_enabled;
@@ -1368,6 +1469,12 @@ impl App {
 
         self.device.device_wait_idle()?;
 
+        //******************************************************************/
+        //
+        // Destruction
+        //
+        //******************************************************************/
+
         // Destroy old level textures
         for texture in &self.data.level_textures {
             self.device.destroy_image_view(texture.view, None);
@@ -1397,7 +1504,12 @@ impl App {
         self.data.indices.clear();
         self.data.draw_groups.clear();
 
+        //******************************************************************/
+        //
         // Load new world
+        //
+        //******************************************************************/
+
         let loaded = load_dat_model(&mut self.data, world_path, 0, 0.01)?;
         self.world_lights = loaded.lights;
         self.game_objects = loaded.game_objects;
@@ -1424,7 +1536,12 @@ impl App {
             &self.world_lights, &shadow_pos, self.fog_color, self.fog_near, self.fog_far, self.fog_enabled, self.sky_fog_far);
         self.upload_light_ubo_to_all();
 
+        //******************************************************************/
+        //
         // Install mesh-backed height provider (uses collision mesh which includes invisible surfaces)
+        //
+        //******************************************************************/
+
         if !loaded.collision_positions.is_empty() && !loaded.collision_indices.is_empty() {
             let mesh = collision::MeshHeightProvider::new(loaded.collision_positions, loaded.collision_indices);
             self.height_provider = Box::new(mesh.clone());
@@ -1434,28 +1551,46 @@ impl App {
             self.mesh_provider = None;
         }
 
+        //******************************************************************/
+        //
+        // Recreation
+        //
+        //******************************************************************/
+
+
         // Recreate texture resources
+
         vulkan::create_texture_image(&self.instance, &self.device, &mut self.data)?;
         vulkan::create_texture_image_view(&self.device, &mut self.data)?;
         vulkan::create_texture_sampler(&self.device, &mut self.data)?;
 
+
         // Recreate buffers
+
         vulkan::create_vertex_buffer(&self.instance, &self.device, &mut self.data)?;
         vulkan::create_index_buffer(&self.instance, &self.device, &mut self.data)?;
 
+
         // Recreate descriptor sets
+
         self.device
             .destroy_descriptor_pool(self.data.descriptor_pool, None);
         vulkan::create_descriptor_pool(&self.device, &mut self.data)?;
         vulkan::create_descriptor_sets(&self.device, &mut self.data)?;
 
+
         // Reset camera
+
         self.camera = Camera::default();
 
+
         // Update current world
+
         self.current_world = world_path.to_string();
 
+
         // Rebuild occlusion culling AABBs
+
         {
             let positions: Vec<[f32; 3]> = self
                 .data
@@ -1477,7 +1612,11 @@ impl App {
         Ok(())
     }
 
-    /// Updates the uniform buffer object for our Vulkan app.
+    //******************************************************************/
+    //
+    // Updates the uniform buffer object for our Vulkan app.
+    //
+    //******************************************************************/
     unsafe fn update_uniform_buffer(&mut self, image_index: usize) -> Result<()> {
         let eye_offset = if self.player_mode == collision::PlayerMode::Walk && !self.is_free_cam {
             self.eye_offset_walk
@@ -1516,10 +1655,14 @@ impl App {
         // Write directly to persistently mapped memory (no map/unmap overhead)
         memcpy(&ubo, self.data.uniform_buffers_mapped[image_index].cast(), 1);
 
+        //******************************************************************/
+        //
         // Upload lighting UBO for the current swapchain image only.
         // Use the cached UBO and set camera_pos here so we avoid writing
         // into buffers that the GPU may be reading for other in-flight
         // frames (this prevents visual corruption / flicker).
+        //
+        //******************************************************************/
         {
             let mut ubo = self.cached_light_ubo.clone();
             let cam_pos = self.camera.position;
@@ -1531,7 +1674,11 @@ impl App {
         Ok(())
     }
 
-    /// Recreates the swapchain for our Vulkan app.
+    //******************************************************************/
+    //
+    // Recreates the swapchain for our Vulkan app.
+    //
+    //******************************************************************/
     #[rustfmt::skip]
     pub unsafe fn recreate_swapchain(&mut self, window: &Window, egui_renderer: &mut egui_renderer::EguiRenderer) -> Result<()> {
         self.device.device_wait_idle()?;
@@ -1561,7 +1708,11 @@ impl App {
         Ok(())
     }
 
-    /// Destroys our Vulkan app.
+    //******************************************************************/
+    //
+    // Destroys our Vulkan app.
+    //
+    //******************************************************************/
     #[rustfmt::skip]
     pub unsafe fn destroy(&mut self) {
         self.device.device_wait_idle().unwrap();
@@ -1599,7 +1750,11 @@ impl App {
         self.instance.destroy_instance(None);
     }
 
-    /// Destroys the parts of our Vulkan app related to the swapchain.
+    //******************************************************************/
+    //
+    // Destroys the parts of our Vulkan app related to the swapchain.
+    //
+    //******************************************************************/
     #[rustfmt::skip]
     unsafe fn destroy_swapchain(&mut self) {
         self.device.destroy_descriptor_pool(self.data.descriptor_pool, None);

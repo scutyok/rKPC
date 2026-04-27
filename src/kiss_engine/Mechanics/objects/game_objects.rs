@@ -1,11 +1,15 @@
-//! GameObjectManager — thin orchestrator for all interactive game objects.
-//!
-//! Object structs, parsing, and per-frame logic live in their own modules
-//! (CBarrel.rs, CDoorSliding.rs, etc.).  This file owns:
-//!   * The `GameObject` enum wrapping every concrete type.
-//!   * `GameObjectManager` — the active object list.
-//!   * Per-frame `update()`, `interact()`, `apply_area_damage()`,
-//!     `apply_point_damage()`, and `dynamic_lights()`.
+//******************************************************************/
+//
+// GameObjectManager — thin orchestrator for all interactive game objects.
+//
+// Object structs, parsing, and per-frame logic live in their own modules
+// (CBarrel.rs, CDoorSliding.rs, etc.).  This file owns:
+//   * The `GameObject` enum wrapping every concrete type.
+//   * `GameObjectManager` — the active object list.
+//   * Per-frame `update()`, `interact()`, `apply_area_damage()`,
+//     `apply_point_damage()`, and `dynamic_lights()`.
+//
+//******************************************************************/
 
 use crate::abc::PlacedAbcObject;
 use crate::dat::WorldObject;
@@ -28,17 +32,11 @@ use crate::CPickupItem::{self, PickupItemObject};
 use crate::CCreature::{self, CreatureObject};
 use crate::scripted_sequence::{BspDoor, BspDoorState, ScriptRunner, ScriptCommand};
 
-
-
-
-
-
-
-
-
-
-
-// ─── Explosion effect ────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// Explosion effect
+//
+//******************************************************************/
 
 /// Transient explosion light flash managed by the object system.
 /// The App merges these into the frame's lighting UBO each frame.
@@ -67,7 +65,11 @@ impl ExplosionLight {
     }
 }
 
-// ─── Game Object enum ────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// Game Object enum
+//
+//******************************************************************/
 
 pub enum GameObject {
     Barrel(BarrelObject),
@@ -104,7 +106,11 @@ impl GameObject {
     }
 }
 
-// ─── Game Object Manager ─────────────────────────────────────────────────────
+//******************************************************************/
+//
+// Game Object Manager
+//
+//******************************************************************/
 
 /// A BSP trigger volume that activates a script when the player presses E inside it.
 #[derive(Debug, Clone)]
@@ -123,7 +129,12 @@ impl ScriptTrigger {
     }
 }
 
-/// A BSP-based switch (CSwitchSlide / CSwitchRotating) — geometry is a world model, not an ABC.
+//******************************************************************/
+//
+// A BSP-based switch (CSwitchSlide / CSwitchRotating) — geometry is a world model, not an ABC.
+//
+//******************************************************************/
+
 #[derive(Debug, Clone)]
 pub struct BspSwitch {
     pub name: String,
@@ -401,7 +412,11 @@ impl GameObjectManager {
         }).collect()
     }
 
-    // ── Per-frame update ─────────────────────────────────────────────────────
+    //******************************************************************/
+    //
+    // Per-frame update
+    //
+    //******************************************************************/
 
     /// Advance all object state machines, apply model-matrix overrides to
     /// `draw_groups`, and determine player zone membership.

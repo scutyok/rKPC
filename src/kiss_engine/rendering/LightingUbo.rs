@@ -1,14 +1,22 @@
-//! Lighting UBO builder — assembles the per-frame `LightingUBO` from world
-//! lights, shadow casters, fog settings, and ambient intensity.
+//******************************************************************/
+// 
+// Lighting UBO builder — assembles the per-frame `LightingUBO` from world
+// lights, shadow casters, fog settings, and ambient intensity.
+// 
+//******************************************************************/
 
 use crate::LightObj::Light;
 use crate::ShadowObj;
 use crate::types::{GpuLight, LightingUBO, MAX_LIGHTS};
 
-/// Build a complete `LightingUBO` ready for GPU upload.
-///
-/// Combines point lights, shadow casters, fog parameters, and ambient colour
-/// into a single UBO struct that matches the GLSL `LightingData` layout.
+//******************************************************************/
+// Build a complete `LightingUBO` ready for GPU upload.
+//
+// Combines point lights, shadow casters, fog parameters, and ambient colour
+// into a single UBO struct that matches the GLSL `LightingData` layout.
+//
+//******************************************************************/
+
 pub fn build_light_ubo(
     world_lights: &[Light],
     shadow_positions: &[[f32; 3]],

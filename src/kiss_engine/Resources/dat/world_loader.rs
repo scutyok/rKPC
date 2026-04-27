@@ -16,7 +16,11 @@ use crate::types::*;
 use crate::vulkan::texture::get_texture_dimensions;
 use crate::DemoSkyWorldModel::SkyModelInfo;
 
-/// Fog settings extracted from a level's WorldProperties object.
+//******************************************************************/
+//
+// Fog settings extracted from a level's WorldProperties object.
+//
+//******************************************************************/
 pub struct LevelFogSettings {
     pub enabled: bool,
     pub color: [f32; 3],
@@ -28,7 +32,11 @@ pub struct LevelFogSettings {
     pub sky_fog_far: f32,
 }
 
-/// Result of loading a DAT world.
+//******************************************************************/
+//
+// Result of loading a DAT world.
+//
+//******************************************************************/
 pub struct LoadedWorld {
     pub lights: Vec<LightObj::Light>,
     /// Collision mesh positions (includes invisible surfaces for blocking).
@@ -45,15 +53,20 @@ pub struct LoadedWorld {
     pub trigger_draw_groups: Vec<(usize, u32)>,
 }
 
-/// Load a KISS Psycho Circus DAT file (v127) and extract mesh data
-///
-/// # Arguments
-/// * `path` - Path to the .dat file
-/// * `world_model_index` - Which world model to load (0 = main world)
-/// * `scale` - Scale factor for the world geometry
-///
-/// # Returns
-/// A `LoadedWorld` containing lights and collision geometry
+//******************************************************************/
+//
+// Load a KISS Psycho Circus DAT file (v127) and extract mesh data
+//
+// # Arguments
+// * `path` - Path to the .dat file
+// * `world_model_index` - Which world model to load (0 = main world)
+// * `scale` - Scale factor for the world geometry
+//
+// # Returns
+// A `LoadedWorld` containing lights and collision geometry
+//
+//******************************************************************/
+
 pub fn load_dat_model<P: AsRef<std::path::Path>>(
     data: &mut AppData,
     path: P,
@@ -234,15 +247,20 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
         println!("    [{}] {}", i, name);
     }
 
+    //******************************************************************/
+    //
     // ABC model objects (barrels, decos, pickups, etc.)
     // Extract models first so we can register their skin textures in the atlas before
     // the texture atlas is built. Geometry is added AFTER subdivision (see below).
-
+    //
     // Collect BSP floor-surface triangles for floor-snapping ground objects.
     // In the original Lithtech engine, objects call MoveToFloor() at spawn to
     // drop from their editor position to the nearest surface below.
     // We triangulate upward-facing polygons to allow precise ray-triangle
     // intersection (vertical ray at object XZ position).
+    //
+    //******************************************************************/
+
     let floor_tris: Vec<abc::FloorTri> = dat_file.world_models.get(world_model_index)
         .map(|bsp| {
             let mut tris = Vec::new();
@@ -466,12 +484,16 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
     };
     debug!("Sky model names for this level: {:?}", sky_model_names);
 
+    //******************************************************************/
+    //
     // Render all sub-world models (doors, windows, crates, ceiling fans, etc.)
     // These are BSP world models with indices 1..end that are not sky/cloud models.
     // Their polygon vertices are in sub-model-local space; we apply world_translation
     // to position them in the world.
     // bsp_submodels tracks (world_name, position_vulkan, draw_group_indices, z_height) for
     // animated objects like ceiling fans and BSP doors.
+    //
+    //******************************************************************/
     let mut bsp_submodels: Vec<(String, [f32; 3], Vec<usize>, f32)> = Vec::new();
     let mut trigger_draw_groups: Vec<(usize, u32)> = Vec::new();
     // Trigger volumes: (name, AABB min, AABB max) for volumes the player can interact with.
@@ -480,11 +502,17 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
     let mut door_collision_ranges: Vec<(String, usize, usize)> = Vec::new();
     {
         let sky_names = &sky_model_names;
+
+        //******************************************************************/
+        //
         // Use skip_invisible(false) for all sub-world models: Lithtech marks
         // many valid sub-model surfaces (fences, grates, thin brushes) with the
         // INVISIBLE flag.  The original engine renders them through the object
         // system; we must include them here.  Non-renderable surfaces are still
         // filtered out by texture name ("invisible", "clip").
+        //
+        //******************************************************************/
+
         let sub_extractor = dat_mesh::MeshExtractor::new(&dat_file)
             .with_scale(scale)
             .with_skip_invisible(false)
@@ -531,10 +559,15 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
                 continue;
             }
 
-            // Translation in Vulkan coords (Lithtech Y-up → Vulkan Z-up).
+            //******************************************************************/
+            //
+            // Translation in Vulkan coords (Lithtech Y-up => Vulkan Z-up).
             // NOTE: sub-model BSP vertices are stored in world space already;
             // world_translation is the model pivot (used as rotation centre for
             // animated objects such as fans) — do NOT add it to vertex positions.
+            //
+            //******************************************************************/
+
             let tx = wm.world_translation.x * scale;
             let ty = wm.world_translation.z * scale;
             let tz = wm.world_translation.y * scale;
@@ -671,11 +704,16 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
         println!("=== Sub-world models rendered: {} world models processed ===", dat_file.world_models.len() - 1);
     }
 
+    //******************************************************************/
+    //
     // ── Animated torch flame billboard quads ───────────────────────────────
     // For every CTorch ABC object, create a transparent billboard quad that
     // cycles through the 6 TORCH*.DTX frames each frame in game_objects.rs.
     // Each torch gets its own quad geometry placed at its world position so
     // the occlusion culler's AABB (built from vertex positions) is correct.
+    //
+    //******************************************************************/
+
     const FLAME_FRAMES: [&str; 6] = [
         "REZ/SPRITETEXTURES/FLAMETEST/TORCH1.DTX",
         "REZ/SPRITETEXTURES/FLAMETEST/TORCH2.DTX",
@@ -1031,9 +1069,14 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
         &creature_anim_data,
     );
 
+    //******************************************************************/
+    //
     // Load SCR scripts from the matching MAPDATA directory.
     // DAT path: REZ/WORLDS/REALM1/R1M1A.DAT
     // SCR dir:  REZ/MAPDATA/REALM1/R1M1/R1M1A/
+    //
+    //******************************************************************/
+
     {
         use crate::scripted_sequence;
         let dat_path = path.as_ref();
@@ -1256,7 +1299,12 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
     })
 }
 
-/// Print summary information about a DAT file without loading mesh data
+//******************************************************************/
+//
+// Print summary information about a DAT file without loading mesh data
+//
+//******************************************************************/
+
 pub fn print_dat_info<P: AsRef<std::path::Path>>(path: P) -> Result<()> {
     info!("Analyzing DAT file: {}", path.as_ref().display());
 
@@ -1319,7 +1367,12 @@ pub fn print_dat_info<P: AsRef<std::path::Path>>(path: P) -> Result<()> {
     Ok(())
 }
 
-/// Spatially subdivide draw groups into smaller cells for tighter frustum culling.
+//******************************************************************/
+//
+// Spatially subdivide draw groups into smaller cells for tighter frustum culling.
+//
+//******************************************************************/
+
 pub fn subdivide_draw_groups(
     vertices: &[Vertex],
     indices: &mut Vec<u32>,

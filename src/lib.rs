@@ -1,6 +1,5 @@
 #![allow(non_snake_case)]
 
-// Manually mapping the folder structure to modules
 #[path = "kiss_engine/Resources/dat/dat.rs"]
 pub mod dat;
 
@@ -11,6 +10,7 @@ pub mod dat_mesh;
 pub mod game_objects;
 
 // ── Individual object modules ────────────────────────────────────────────────
+
 #[path = "kiss_engine/Mechanics/objects/object_utils.rs"]
 pub(crate) mod object_utils;
 
@@ -58,6 +58,8 @@ pub mod CPickupItem;
 
 #[path = "kiss_engine/Mechanics/objects/CCreature.rs"]
 pub mod CCreature;
+
+// ── Other Modules ────────────────────────────────────────────────
 
 #[path = "kiss_engine/Mechanics/levelscripting/scripted_sequence.rs"]
 pub mod scripted_sequence;
@@ -107,6 +109,6 @@ pub mod abc;
 #[path = "kiss_engine/Rendering/vulkan/mod.rs"]
 pub mod vulkan;
 
-// Headless enemy AI (ported from original C code)
+// ── Enemies ────────────────────────────────────────────────
 #[path = "kiss_engine/Mechanics/enemies/normal_enemies/headless.rs"]
 pub mod headless_enemy;

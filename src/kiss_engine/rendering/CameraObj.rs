@@ -2,7 +2,12 @@ use cgmath::{vec3, InnerSpace};
 
 use crate::types::{Mat4, Vec3};
 
-/// Camera state for FPS-style controls
+//******************************************************************/
+//
+// Camera state for FPS-style controls
+//
+//******************************************************************/
+
 #[derive(Clone, Debug)]
 pub struct Camera {
     pub position: Vec3,
@@ -56,7 +61,12 @@ impl Camera {
     }
 }
 
-/// Input state tracking
+//******************************************************************/
+//
+// Input State Tracking
+//
+//******************************************************************/
+
 #[derive(Clone, Debug, Default)]
 pub struct InputState {
     pub forward: bool,

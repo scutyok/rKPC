@@ -1,9 +1,13 @@
-//! CPickupItem — spinning/bobbing pickup items (health, ammo, weapons, armor, quest items).
-//!
-//! In the original KISS Psycho Circus engine, pickup items float and rotate
-//! slowly to attract the player's attention. This module reproduces that
-//! behaviour by applying a per-frame Y-axis rotation and a gentle Z-axis
-//! sine-wave bob to the draw group's model matrix.
+//******************************************************************/
+//
+// CPickupItem — spinning/bobbing pickup items (health, ammo, weapons, armor, quest items).
+//
+// In the original KISS Psycho Circus engine, pickup items float and rotate
+// slowly to attract the player's attention. This module reproduces that
+// behaviour by applying a per-frame Y-axis rotation and a gentle Z-axis
+// sine-wave bob to the draw group's model matrix.
+//
+//******************************************************************/
 
 use cgmath::{Matrix4, Rad, vec3};
 use crate::object_utils::{matrix4_to_array, set_draw_group_matrix};

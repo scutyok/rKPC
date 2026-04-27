@@ -1,14 +1,18 @@
-//! CSwitchRotating — lever/switch that rotates when the player presses E.
-//!
-//! On activation the switch rotates by `RotationAngle` degrees around the
-//! local Z axis over ~0.33 s, then fires its `TriggerTarget`.
-//!
-//! CSwitchSlide uses the same SwitchObject but translates instead of rotating
-//! (re-exports from this file).
-//!
-//! DAT properties read:
-//!   `TriggerTarget`  (String) — linked door / object name.
-//!   `RotationAngle`  (Float)  — degrees to rotate on activation (default 90°).
+//******************************************************************/
+//
+// CSwitchRotating — lever/switch that rotates when the player presses E.
+//
+// On activation the switch rotates by `RotationAngle` degrees around the
+// local Z axis over ~0.33 s, then fires its `TriggerTarget`.
+//
+// CSwitchSlide uses the same SwitchObject but translates instead of rotating
+// (re-exports from this file).
+//
+// DAT properties read:
+//   `TriggerTarget`  (String) — linked door / object name.
+//   `RotationAngle`  (Float)  — degrees to rotate on activation (default 90°).
+//
+//******************************************************************/
 
 use cgmath::{Deg, Matrix4, vec3};
 

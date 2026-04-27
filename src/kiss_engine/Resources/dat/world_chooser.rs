@@ -1,4 +1,9 @@
-/// Application loading state
+//******************************************************************/
+//
+// Application loading state
+//
+//******************************************************************/
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum LoadingState {
     Loading(String),
@@ -11,7 +16,12 @@ impl Default for LoadingState {
     }
 }
 
-/// World chooser UI state
+//******************************************************************/
+//
+// World chooser UI state
+//
+//******************************************************************/
+
 #[derive(Clone, Debug)]
 pub struct WorldChooser {
     pub visible: bool,

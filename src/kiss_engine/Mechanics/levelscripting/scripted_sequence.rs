@@ -1,18 +1,28 @@
-//! SCR script parser and runner for KISS Psycho Circus scripted sequences.
-//!
-//! SCR files contain timed commands like:
-//!   2.8 trigger_door door01 open
-//!   3.2 trigger_generic Doorless01
-//!
-//! This module parses the commands we can act on and runs them at the right
-//! time offsets when the sequence is triggered.
+//******************************************************************/
+//
+// SCR script parser and runner for KISS Psycho Circus scripted sequences.
+//
+// SCR files contain timed commands like:
+//   2.8 trigger_door door01 open
+//   3.2 trigger_generic Doorless01
+//
+// This module parses the commands we can act on and runs them at the right
+// time offsets when the sequence is triggered.
+//
+//******************************************************************/
+
 
 use cgmath::{Matrix4, vec3};
 
 use crate::object_utils::matrix4_to_array;
 use crate::types::DrawGroup;
 
-// ─── Script commands ─────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// Script commands
+//
+//******************************************************************/
+
 
 #[derive(Debug, Clone)]
 pub enum ScriptCommand {
@@ -26,10 +36,14 @@ pub struct TimedCommand {
     pub command: ScriptCommand,
 }
 
-// ─── SCR parser ──────────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// SCR parser
+//
+//******************************************************************/
 
-/// Parse an SCR script file into a list of timed commands.
-/// Only commands we can act on are extracted; the rest are ignored.
+// Parse an SCR script file into a list of timed commands.
+// Only commands we can act on are extracted; the rest are ignored.
 pub fn parse_scr(contents: &str) -> Vec<TimedCommand> {
     let mut commands = Vec::new();
     for line in contents.lines() {
@@ -61,7 +75,12 @@ pub fn parse_scr(contents: &str) -> Vec<TimedCommand> {
     commands
 }
 
-// ─── BSP Door ────────────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// BSP Door
+//
+//******************************************************************/
+
 
 /// Slide speed in Vulkan units per second.
 const BSP_DOOR_SPEED: f32 = 3.0;
@@ -73,7 +92,12 @@ pub enum BspDoorState {
     Open,
 }
 
-/// A BSP sub-model door that slides upward when opened.
+//******************************************************************/
+//
+// A BSP sub-model door that slides upward when opened.
+//
+//******************************************************************/
+
 #[derive(Debug, Clone)]
 pub struct BspDoor {
     /// Lowercase name matching the BSP world model name (e.g. "door01").
@@ -132,7 +156,12 @@ impl BspDoor {
     }
 }
 
-// ─── Script Runner ───────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// Script Runner
+//
+//******************************************************************/
+
 
 #[derive(Debug, Clone)]
 pub struct ScriptRunner {

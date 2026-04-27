@@ -1,0 +1,49 @@
+1. Make level scripting, manually since I don't have the sourcecode and Sverre André Kvernmo (Cranium) doesn't have it either...
+    - Make the volume nodes work as intended (only render what is inside the volume node, early occlussion culling, should lead up to better performance)
+    - Make the triggers work
+    - Make the voice lines work
+    - Make the pickups counts
+    - Make a start level and end level triggers which lead up to the next level
+    - Make the key object logic
+    - Make the raven animations work
+
+2. Make the actual menu
+    - Play
+        * New Game
+            * Select Difficulty
+                + Select character
+        * Load Game
+        * Save Game (only if you are already in a loaded game)
+        * Map Selector
+        * Tutorial Map
+    - Options
+        * Graphics Settings
+        * Audio
+        * Keybinds
+    - Credits
+    - Exit
+
+3. Make the player HUD
+
+4. Make the player obj with a visible model which contains these stats:
+    - HP
+    - Ammo
+    - Gun count
+    - Pickups
+
+5. Implement enemy AI
+    - YOLO, decompiling this game with IDA is a horror story, only got some parts of the headless enemy AI done in 2 months of IDA...
+    - change AABB to a box instead of cylinder
+    - implement gibbing on certain hp levels and death
+
+6. Implement weapons
+    - these should deal damage to the enemy, not just for show
+
+7. OPTIMIZE THIS GARBAGE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+ 
+8. Make it more close to the original
+
+9. IF and ONLY IF it's in a playable and really well running state:
+    - ADD A DLC BASED ON THE 99 DESIGN DOCUMENTS
+
+10. Thanks for listening to my schizo talk

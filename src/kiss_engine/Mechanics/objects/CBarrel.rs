@@ -1,22 +1,34 @@
-//! CBarrel — explosive/breakable barrel for KISS Psycho Circus.
-//!
-//! Barrel types (inferred from skin texture):
-//!   BARREL_A.DTX  → Air    (large concussive blast)
-//!   BARREL_F.DTX  → Fire   (burning splash)
-//!   BARREL_G.DTX  → Earth  (shrapnel)
-//!   BARREL_W.DTX / BARREL_WATER.DTX → Water (splash)
-//!   BARREL_E.DTX / BARREL_CIR.DTX  → Electric (chain lightning)
+//******************************************************************/
+//
+//  CBarrel — explosive/breakable barrel for KISS Psycho Circus.
+//
+//  Barrel types (inferred from skin texture):
+//  BARREL_A.DTX  → Air    (large concussive blast)
+//  BARREL_F.DTX  → Fire   (burning splash)
+//  BARREL_G.DTX  → Earth  (shrapnel)
+//  BARREL_W.DTX / BARREL_WATER.DTX → Water (splash)
+//  BARREL_E.DTX / BARREL_CIR.DTX  → Electric (chain lightning)
+//
+//******************************************************************/
 
 use crate::dat::WorldObject;
 use crate::object_utils::prop_float;
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// Constants 
+//
+//******************************************************************/
 
 pub const BARREL_HEALTH_DEFAULT: f32 = 50.0;
 /// How long the explosion light flash lasts (seconds).
 pub const EXPLOSION_FLASH_DURATION: f32 = 1.2;
 
-// ─── BarrelElement ───────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// BarrelElement
+//
+//******************************************************************/
 
 /// Elemental type inferred from the barrel's skin texture filename.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -76,7 +88,11 @@ impl BarrelElement {
     }
 }
 
-// ─── BarrelState ─────────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// BarrelState
+//
+//******************************************************************/
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BarrelState {
@@ -86,7 +102,11 @@ pub enum BarrelState {
     Destroyed,
 }
 
-// ─── BarrelObject ─────────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// BarrelObject
+//
+//******************************************************************/
 
 #[derive(Debug, Clone)]
 pub struct BarrelObject {
@@ -118,7 +138,11 @@ impl BarrelObject {
     }
 }
 
-// ─── Explosion data returned to the manager ──────────────────────────────────
+//******************************************************************/
+//
+// Explosion data returned to the manager
+//
+//******************************************************************/
 
 /// Data emitted when a barrel explodes; the manager turns this into a light
 /// flash and triggers area-damage on nearby objects.
@@ -130,7 +154,11 @@ pub struct PendingExplosion {
     pub color: [f32; 3],
 }
 
-// ─── DAT construction ────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// DAT construction
+//
+//******************************************************************/
 
 pub fn parse(
     pos: [f32; 3],
@@ -154,7 +182,11 @@ pub fn parse(
     }
 }
 
-// ─── Per-frame update ────────────────────────────────────────────────────────
+//******************************************************************/
+//
+// Per-frame update
+//
+//******************************************************************/
 
 /// Advance the barrel state machine.
 /// Returns `Some(PendingExplosion)` the frame the barrel explodes so the

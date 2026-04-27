@@ -1,36 +1,48 @@
-//! DemoSkyWorldModel — an animated sky BSP world model (dome, clouds, moon, buildings).
-//!
-//! In the Lithtech engine, DemoSkyWorldModel is an entity that wraps a BSP world
-//! model by name and places it in the sky rendering pass (camera-relative, no
-//! parallax with world movement).
-//!
-//! DAT properties read:
-//!   `Name`          (String)  — BSP world-model name this entity controls.
-//!   `SkyDims`       (Vector3) — sky sphere extents (cosmetic, not used in our renderer).
-//!   `InnerPercentZ` (Float)   — inner-camera Z axis fraction (unused here).
-//!   `Index`         (Float / LongInt) — draw order within the sky pass.
-//!
-//! Animation implemented here:
-//!   * Models containing "cloud" in their name receive slow horizontal UV-panning
-//!     via a model-matrix translation applied each frame.
-//!   * Models containing "moon" receive a very slow orbital rotation.
-//!   * All other sky models (sky dome, ground, buildings) are static.
+//******************************************************************/
+//
+// DemoSkyWorldModel — an animated sky BSP world model (dome, clouds, moon, buildings).
+//
+// In the Lithtech engine, DemoSkyWorldModel is an entity that wraps a BSP world
+// model by name and places it in the sky rendering pass (camera-relative, no
+// parallax with world movement).
+//
+// DAT properties read:
+//   `Name`          (String)  — BSP world-model name this entity controls.
+//   `SkyDims`       (Vector3) — sky sphere extents (cosmetic, not used in our renderer).
+//   `InnerPercentZ` (Float)   — inner-camera Z axis fraction (unused here).
+//   `Index`         (Float / LongInt) — draw order within the sky pass.
+//
+// Animation implemented here:
+//   * Models containing "cloud" in their name receive slow horizontal UV-panning
+//     via a model-matrix translation applied each frame.
+//   * Models containing "moon" receive a very slow orbital rotation.
+//   * All other sky models (sky dome, ground, buildings) are static.
+//
+//******************************************************************/
 
 use cgmath::{Matrix4, Rad, vec3};
 
 use crate::object_utils::{matrix4_to_array, set_draw_group_matrix};
 use crate::types::DrawGroup;
 
-// ─── Pan speeds (Vulkan units per second in sky-camera space) ────────────────
+//******************************************************************/
+//
+// Pan speeds (Vulkan units per second in sky-camera space)
 //
 // These are aesthetic values calibrated to feel like the original game.
 // Because sky models are camera-relative they behave like UV-scroll at horizon.
+//
+//******************************************************************/
 
 const CLOUD_PAN_SPEED_X: f32 = 0.04;  // cloud layer 1 drifts along +X
 const CLOUD2_PAN_SPEED_Y: f32 = 0.025; // cloud layer 2 drifts along +Y (perpendicular)
 const MOON_ROT_SPEED: f32 = 0.002;     // radians/s — slow orbit
 
-// ─── SkyModelInfo (returned by world_loader) ──────────────────────────────────
+//******************************************************************/
+//
+// SkyModelInfo (returned by world_loader)
+//
+//******************************************************************/
 
 /// Lightweight descriptor produced by world_loader when it adds a sky world
 /// model to the draw-group array.
@@ -49,8 +61,11 @@ pub struct SkyModelInfo {
     /// Optional rotation speed (radians/s) provided by DAT properties.
     pub rot_speed: Option<f32>,
 }
-
-// ─── SkyWorldModelObject ──────────────────────────────────────────────────────
+//******************************************************************/
+//
+// SkyWorldModelObject
+//
+//******************************************************************/
 
 /// Runtime game-object that animates a sky BSP model each frame.
 #[derive(Debug, Clone)]

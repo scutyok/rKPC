@@ -1,10 +1,14 @@
-//! CCreature — creature models (CHeadless, etc.) with idle animation.
-//!
-//! In the original KISS Psycho Circus engine, creatures are AI-driven enemies.
-//! This module places them as models in the world and plays their idle
-//! animation by swapping pre-baked, uniformly-spaced keyframe meshes in the
-//! draw group.  Frames are generated at load time with bone-interpolated
-//! sampling (slerp/lerp) so playback is smooth with no runtime cost.
+//******************************************************************/
+//
+// CCreature — creature models (CHeadless, etc.) with idle animation.
+//
+// In the original KISS Psycho Circus engine, creatures are AI-driven enemies.
+// This module places them as models in the world and plays their idle
+// animation by swapping pre-baked, uniformly-spaced keyframe meshes in the
+// draw group.  Frames are generated at load time with bone-interpolated
+// sampling (slerp/lerp) so playback is smooth with no runtime cost.
+//
+//******************************************************************/
 
 use crate::types::DrawGroup;
 
@@ -41,7 +45,11 @@ pub fn parse(pos: [f32; 3], dg: usize, type_name: &str) -> CreatureObject {
     }
 }
 
-/// Set up animation data from pre-computed frame info.
+//******************************************************************/
+//
+// Set up animation data from pre-computed frame info.
+//
+//******************************************************************/
 pub fn set_animation(
     creature: &mut CreatureObject,
     frame_first_indices: Vec<u32>,
@@ -55,7 +63,12 @@ pub fn set_animation(
     creature.anim_duration = duration_ms as f32 / 1000.0;
 }
 
-/// Advance the idle animation and update the draw group to show the current frame.
+//******************************************************************/
+//
+// Advance the idle animation and update the draw group to show the current frame.
+//
+//******************************************************************/
+
 pub fn update(creature: &mut CreatureObject, dt: f32, draw_groups: &mut Vec<DrawGroup>) {
     if creature.num_frames <= 1 || creature.anim_duration <= 0.0 {
         return;

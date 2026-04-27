@@ -1,7 +1,12 @@
-//mesh conversion for KISS Psycho Circus DAT files
+
+//******************************************************************/
 //
-//converts the BSP world data from DAT files into Vulkan-compatible
-//vertex and index buffers for rendering
+// mesh conversion for KISS Psycho Circus DAT files
+//
+// converts the BSP world data from DAT files into Vulkan-compatible
+// vertex and index buffers for rendering
+//
+//******************************************************************/
 
 use crate::dat::{DatFile, Vector2, Vector3, WorldBsp, WorldPoly, WorldSurface};
 use std::collections::HashMap;
@@ -58,7 +63,12 @@ impl Hash for DatVertex {
     }
 }
 
-/// A mesh group sharing the same texture
+//******************************************************************/
+//
+// A mesh group sharing the same texture
+//
+//******************************************************************/
+
 #[derive(Debug, Default)]
 pub struct TexturedMesh {
     /// Texture name (path to .dtx file)
@@ -90,7 +100,12 @@ pub struct WorldMesh {
     pub textured_meshes: Vec<TexturedMesh>,
 }
 
-/// Surface flags for filtering polygons
+//******************************************************************/
+//
+// Surface flags for filtering polygons
+//
+//******************************************************************/
+
 pub mod surface_flags {
     pub const INVISIBLE: u32 = 0x0001;
     pub const NO_SUBDIVIDE: u32 = 0x0002;
@@ -102,7 +117,11 @@ pub mod surface_flags {
     pub const TEXTURE_ANIM: u32 = 0x0800;
 }
 
-/// Extracts renderable mesh data from a DAT file
+//******************************************************************/
+//
+// Extracts renderable mesh data from a DAT file
+//
+//******************************************************************/
 pub struct MeshExtractor<'a> {
     dat: &'a DatFile,
     /// Scale factor for the world (Lithtech units to desired units)
@@ -439,8 +458,13 @@ impl<'a> MeshExtractor<'a> {
     }
 }
 
-/// Convert a WorldMesh to simple vertex/index arrays for Vulkan
-/// Returns (vertices, indices) where each vertex is [pos.x, pos.y, pos.z, color.r, color.g, color.b, u, v]
+//******************************************************************/
+//
+// Convert a WorldMesh to simple vertex/index arrays for Vulkan
+// Returns (vertices, indices) where each vertex is [pos.x, pos.y, pos.z, color.r, color.g, color.b, u, v]
+//
+//******************************************************************/
+
 pub fn to_interleaved_arrays(mesh: &WorldMesh) -> (Vec<f32>, Vec<u32>) {
     let mut vertex_data = Vec::with_capacity(mesh.vertices.len() * 11);
 
@@ -465,7 +489,11 @@ pub fn to_interleaved_arrays(mesh: &WorldMesh) -> (Vec<f32>, Vec<u32>) {
     (vertex_data, mesh.indices.clone())
 }
 
-/// Statistics about extracted mesh data
+//******************************************************************/
+//
+// Statistics about extracted mesh data
+//
+//******************************************************************/
 #[derive(Debug, Default)]
 pub struct MeshStats {
     pub total_vertices: usize,
