@@ -24,12 +24,7 @@ It started as a [DLL injection project/D3D9 hook](http://https://github.com/scut
 
 <h2>Roadmap</h2>
 
-- [ ] Interactive objects (Sliding doors, Levers, etc..)
-- [ ] Enemy AI
-- [ ] HUD
-- [ ] Player State
-- [ ] Quake-like movement
-- [ ] Triggers
+- Check TODO file
 
 <h2>How to use</h2>
 
