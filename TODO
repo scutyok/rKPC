@@ -1,3 +1,5 @@
+0. Add an actual CMD terminal in which I log the errors.
+
 1. Make level scripting, manually since I don't have the sourcecode and Sverre André Kvernmo (Cranium) doesn't have it either...
     - Make the volume nodes work as intended (only render what is inside the volume node, early occlussion culling, should lead up to better performance)
     - Make the triggers work
