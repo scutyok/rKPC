@@ -52,6 +52,5 @@ It started as a [DLL injection project/D3D9 hook](http://https://github.com/scut
 
 <h2>Thanks to</h2>
 
--	[Kyle Mayes for making a tutorial on Vulkan for Rust](https://kylemayes.github.io/vulkanalia/introduction.html)
 -	[Monolith for releasing their source code on various lithtech games which served as a guide](https://github.com/jsj2008/lithtech)
-
+- 	[Sverre André Kvernmo (Cranium) for giving us the 99' design documents](https://doomwiki.org/wiki/Sverre_Andr%C3%A9_Kvernmo_(Cranium))
