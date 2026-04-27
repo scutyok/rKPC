@@ -21,14 +21,14 @@ use vulkanalia::vk::KhrSwapchainExtensionDeviceCommands;
 use vulkanalia::window as vk_window;
 use winit::window::Window;
 
-use rustKPC::collision;
+use rustKPC::{OcclusionCulling, collision};
 use rustKPC::egui_renderer;
 use rustKPC::game_objects::GameObjectManager;
-use rustKPC::lights;
-use rustKPC::lighting_ubo;
-use rustKPC::occlusion_culling;
-use rustKPC::player_movement::{self, MovementState};
-use rustKPC::camera::{Camera, InputState};
+use rustKPC::LightObj;
+use rustKPC::LightingUbo;
+use rustKPC::OcclusionCulling::{Frustum, OcclusionCuller};
+use rustKPC::CPlayerMovement::{self, MovementState};
+use rustKPC::CameraObj::{Camera, InputState};
 use rustKPC::types::*;
 use rustKPC::vulkan;
 use rustKPC::world_chooser::{LoadingState, WorldChooser};
@@ -59,13 +59,20 @@ pub struct App {
     pub show_fps: bool,
     pub vsync: bool,
     pub freeze_culling: bool,
+    /// Enable/disable dynamic point lights and blob shadows
+    pub dynamic_lighting: bool,
+    /// When true, render sky and world at fixed coordinates (bounded map box)
+    pub bounded_world: bool,
+    /// World geometry bounds (computed from loaded mesh)
+    pub world_bounds_min: [f32; 3],
+    pub world_bounds_max: [f32; 3],
     pub saved_player_camera: Option<Camera>,
     pub eye_offset_walk: f32,
     pub player_fov: f32,
     pub fps: f32,
-    pub occlusion_culler: occlusion_culling::OcclusionCuller,
+    pub occlusion_culler: OcclusionCulling::OcclusionCuller,
     // Lighting
-    pub world_lights: Vec<lights::Light>,
+    pub world_lights: Vec<LightObj::Light>,
     /// Cached lighting UBO (rebuilt only when lights change, not every frame)
     pub cached_light_ubo: LightingUBO,
     // Game objects
@@ -112,6 +119,23 @@ impl App {
         let initial_game_objects = loaded.game_objects;
         let initial_entity_cylinders = loaded.entity_cylinders;
 
+        // Compute world bounds from loaded vertex data so we can optionally
+        // enforce a bounded world box (used for clamping camera movement).
+        let mut world_min = [f32::INFINITY, f32::INFINITY, f32::INFINITY];
+        let mut world_max = [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+        for v in &data.vertices {
+            world_min[0] = world_min[0].min(v.pos.x);
+            world_min[1] = world_min[1].min(v.pos.y);
+            world_min[2] = world_min[2].min(v.pos.z);
+            world_max[0] = world_max[0].max(v.pos.x);
+            world_max[1] = world_max[1].max(v.pos.y);
+            world_max[2] = world_max[2].max(v.pos.z);
+        }
+        println!(
+            "World bounds: min=({:.2},{:.2},{:.2}) max=({:.2},{:.2},{:.2})",
+            world_min[0], world_min[1], world_min[2], world_max[0], world_max[1], world_max[2]
+        );
+
         vulkan::create_texture_image(&instance, &device, &mut data)?;
         vulkan::create_texture_image_view(&device, &mut data)?;
         vulkan::create_texture_sampler(&device, &mut data)?;
@@ -141,7 +165,7 @@ impl App {
             };
 
         let initial_occlusion_culler = {
-            let mut culler = occlusion_culling::OcclusionCuller::new();
+            let mut culler = OcclusionCulling::OcclusionCuller::new();
             let positions: Vec<[f32; 3]> = data
                 .vertices
                 .iter()
@@ -186,13 +210,17 @@ impl App {
             show_fps: true,
             vsync: true,
             freeze_culling: true,
+            dynamic_lighting: true,
+            bounded_world: true,
+            world_bounds_min: world_min,
+            world_bounds_max: world_max,
             saved_player_camera: None,
             eye_offset_walk: 0.32,
             player_fov: 60.0,
             fps: 0.0,
             occlusion_culler: initial_occlusion_culler,
             world_lights: initial_lights.clone(),
-            cached_light_ubo: lighting_ubo::build_light_ubo(&initial_lights, &[], fog_color, fog_near, fog_far, fog_enabled, sky_fog_far),
+            cached_light_ubo: LightingUbo::build_light_ubo(&initial_lights, &[], fog_color, fog_near, fog_far, fog_enabled, sky_fog_far),
             game_objects: initial_game_objects,
             entity_cylinders: initial_entity_cylinders,
             elapsed_time: 0.0,
@@ -221,7 +249,7 @@ impl App {
     /// Build a LightingUBO from a list of lights, shadow casters, and current fog settings.
     /// Delegates to `lighting_ubo::build_light_ubo`.
     fn build_light_ubo(
-        world_lights: &[lights::Light],
+        world_lights: &[LightObj::Light],
         shadow_positions: &[[f32; 3]],
         fog_color: [f32; 3],
         fog_near: f32,
@@ -229,7 +257,7 @@ impl App {
         fog_enabled: bool,
         sky_fog_far: f32,
     ) -> LightingUBO {
-        lighting_ubo::build_light_ubo(world_lights, shadow_positions, fog_color, fog_near, fog_far, fog_enabled, sky_fog_far)
+        LightingUbo::build_light_ubo(world_lights, shadow_positions, fog_color, fog_near, fog_far, fog_enabled, sky_fog_far)
     }
 
     /// Upload the full cached light UBO to all swapchain images' persistently mapped memory.
@@ -390,7 +418,7 @@ impl App {
                     1000.0,
                 );
             let vp = raw_proj * cull_view;
-            let frustum = occlusion_culling::Frustum::from_view_proj(&vp);
+            let frustum = OcclusionCulling::Frustum::from_view_proj(&vp);
             self.occlusion_culler.cull(&frustum);
         }
 
@@ -438,7 +466,8 @@ impl App {
 
         let command_buffer = command_buffers[model_index];
 
-        let sky_opacity: f32 = -0.7;
+        // Negative opacity = sky mode; use -1.0 for fully opaque sky/buildings
+        let sky_opacity: f32 = -1.0;
         let sky_opacity_bytes = &sky_opacity.to_ne_bytes()[..];
         let world_flag: f32 = 1.0;
         let world_flag_bytes = &world_flag.to_ne_bytes()[..];
@@ -473,30 +502,51 @@ impl App {
                 sky_opacity_bytes,
             );
 
-            // Re-center sky geometry on the camera. First subtract sky_translation
-            // to bring vertices to local origin, scale down to bring the sky closer,
-            // then translate to camera position (including walk-mode eye offset).
+            // Sky model transform. If `bounded_world` is enabled, draw the sky
+            // at its fixed world coordinates (no recentering); otherwise keep
+            // the existing behaviour of recentring the sky on the camera.
             let sky_t = self.data.sky_translation;
             let sky_scale = 1.0;
-            let sky_z_raise = 1.0_f32; // raise the sky dome upward
-            let eye_z = if self.player_mode == collision::PlayerMode::Walk && !self.is_free_cam {
-                self.eye_offset_walk
+            if self.bounded_world {
+                // Render sky at its original world translation so it's enclosed
+                // within the map. Apply a small upward raise to avoid z-fighting.
+                let sky_z_raise = 1.0_f32; // raise the sky dome upward
+                let sky_model = Mat4::from_translation(vec3(sky_t[0], sky_t[1], sky_t[2] + sky_z_raise))
+                    * Mat4::from_scale(sky_scale);
+                let sky_model_bytes = std::slice::from_raw_parts(
+                    &sky_model as *const Mat4 as *const u8,
+                    size_of::<Mat4>(),
+                );
+                self.device.cmd_push_constants(
+                    command_buffer,
+                    self.data.pipeline_layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    sky_model_bytes,
+                );
             } else {
-                0.0
-            };
-            let cam_eye = self.camera.position + vec3(0.0, 0.0, eye_z);
-            let sky_model = Mat4::from_translation(cam_eye + vec3(0.0, 0.0, sky_z_raise))
-                * Mat4::from_scale(sky_scale)
-                * Mat4::from_translation(-vec3(sky_t[0], sky_t[1], sky_t[2]));
-            let sky_model_bytes = std::slice::from_raw_parts(
-                &sky_model as *const Mat4 as *const u8, size_of::<Mat4>());
-            self.device.cmd_push_constants(
-                command_buffer,
-                self.data.pipeline_layout,
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                sky_model_bytes,
-            );
+                let sky_z_raise = 1.0_f32; // raise the sky dome upward
+                let eye_z = if self.player_mode == collision::PlayerMode::Walk && !self.is_free_cam {
+                    self.eye_offset_walk
+                } else {
+                    0.0
+                };
+                let cam_eye = self.camera.position + vec3(0.0, 0.0, eye_z);
+                let sky_model = Mat4::from_translation(cam_eye + vec3(0.0, 0.0, sky_z_raise))
+                    * Mat4::from_scale(sky_scale)
+                    * Mat4::from_translation(-vec3(sky_t[0], sky_t[1], sky_t[2]));
+                let sky_model_bytes = std::slice::from_raw_parts(
+                    &sky_model as *const Mat4 as *const u8,
+                    size_of::<Mat4>(),
+                );
+                self.device.cmd_push_constants(
+                    command_buffer,
+                    self.data.pipeline_layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    sky_model_bytes,
+                );
+            }
 
             for group_idx in sky_start..self.data.draw_groups.len() {
                 let group = &self.data.draw_groups[group_idx];
@@ -627,7 +677,7 @@ impl App {
 
         if self.player_mode == collision::PlayerMode::Flying {
             // Noclip / fly mode — direct velocity, no physics
-            let delta = player_movement::fly_tick(
+            let delta = CPlayerMovement::fly_tick(
                 self.input.forward,
                 self.input.backward,
                 self.input.left,
@@ -656,7 +706,7 @@ impl App {
             }
         };
 
-        let input = player_movement::build_move_input(
+        let input = CPlayerMovement::build_move_input(
             self.input.forward,
             self.input.backward,
             self.input.left,
@@ -666,7 +716,7 @@ impl App {
             [right.x, right.y],
         );
 
-        let delta = player_movement::tick(&mut self.move_state, &input, dt);
+        let delta = CPlayerMovement::tick(&mut self.move_state, &input, dt);
 
         self.camera.position.x += delta[0];
         self.camera.position.y += delta[1];
@@ -813,6 +863,25 @@ impl App {
                 self.move_state.velocity[1] = 0.0;
             }
         }
+
+        // If bounded world mode is enabled, clamp the player's XY position
+        // to the loaded world bounding box (with a small margin).
+        if self.bounded_world {
+            let margin = 0.5_f32;
+            self.camera.position.x = self.camera.position.x.clamp(
+                self.world_bounds_min[0] + margin,
+                self.world_bounds_max[0] - margin,
+            );
+            self.camera.position.y = self.camera.position.y.clamp(
+                self.world_bounds_min[1] + margin,
+                self.world_bounds_max[1] - margin,
+            );
+            // Clamp Z as well to avoid leaving the enclosed box vertically
+            self.camera.position.z = self.camera.position.z.clamp(
+                self.world_bounds_min[2] + 0.1,
+                self.world_bounds_max[2] - 0.1,
+            );
+        }
     }
 
     /// Tick all game objects, apply physics state-machines, and upload dynamic lights if needed.
@@ -830,17 +899,41 @@ impl App {
             self.game_objects.update_door_collision(&mut mesh.positions);
         }
 
-        // Rebuild the UBO every frame with dynamic lights + shadow casters
-        let dynamic = self.game_objects.dynamic_lights(self.elapsed_time);
-        let shadow_positions = self.game_objects.shadow_caster_positions();
+        // Rebuild the UBO every frame. Respect `dynamic_lighting` so disabling
+        // dynamic lighting prevents per-frame dynamic lights/shadows from
+        // overwriting the user's chosen UBO state.
+        let dynamic: Vec<LightObj::Light> = if self.dynamic_lighting {
+            self.game_objects.dynamic_lights(self.elapsed_time)
+        } else {
+            Vec::new()
+        };
+        let shadow_positions: Vec<[f32; 3]> = if self.dynamic_lighting {
+            self.game_objects.shadow_caster_positions()
+        } else {
+            Vec::new()
+        };
+
         {
+            // Build the combined lighting UBO (world + dynamic lights/shadows)
+            // but do NOT write it directly into all persistently mapped
+            // buffers here — writing to buffers that the GPU may currently
+            // be reading can cause visual corruption. Instead store it in
+            // `self.cached_light_ubo` and write only the per-frame mapping
+            // for the active swapchain image in `update_uniform_buffer`.
             let mut all_lights = self.world_lights.clone();
             all_lights.extend(dynamic);
             let combined_ubo = Self::build_light_ubo(
-                &all_lights, &shadow_positions, self.fog_color, self.fog_near, self.fog_far, self.fog_enabled, self.sky_fog_far);
-            for mapped in &self.data.light_uniform_buffers_mapped {
-                memcpy(&combined_ubo, (*mapped).cast(), 1);
-            }
+                &all_lights,
+                &shadow_positions,
+                self.fog_color,
+                self.fog_near,
+                self.fog_far,
+                self.fog_enabled,
+                self.sky_fog_far,
+            );
+
+            // Cache for upload during `update_uniform_buffer(image_index)`.
+            self.cached_light_ubo = combined_ubo;
         }
     }
 
@@ -1079,6 +1172,46 @@ impl App {
                                 self.saved_player_camera = Some(self.camera.clone());
                             } else if !self.freeze_culling {
                                 self.saved_player_camera = None;
+                            }
+                        }
+                        ui.add_space(20.0);
+                        if ui.checkbox(&mut self.dynamic_lighting, "Dynamic Lighting").changed() {
+                            if self.dynamic_lighting {
+                                // Rebuild the cached UBO (restores lights/shadows)
+                                let shadow_pos = self.game_objects.shadow_caster_positions();
+                                self.cached_light_ubo = Self::build_light_ubo(
+                                    &self.world_lights,
+                                    &shadow_pos,
+                                    self.fog_color,
+                                    self.fog_near,
+                                    self.fog_far,
+                                    self.fog_enabled,
+                                    self.sky_fog_far,
+                                );
+                            } else {
+                                // Disable dynamic lighting by zeroing counts
+                                self.cached_light_ubo.light_count = 0;
+                                self.cached_light_ubo.shadow_count = 0;
+                            }
+                            unsafe { self.upload_light_ubo_to_all(); }
+                        }
+                        ui.add_space(20.0);
+                        if ui.checkbox(&mut self.bounded_world, "Bounded World").changed() {
+                            if self.bounded_world {
+                                // Immediately clamp player into bounds when enabling
+                                let margin = 0.5_f32;
+                                self.camera.position.x = self.camera.position.x.clamp(
+                                    self.world_bounds_min[0] + margin,
+                                    self.world_bounds_max[0] - margin,
+                                );
+                                self.camera.position.y = self.camera.position.y.clamp(
+                                    self.world_bounds_min[1] + margin,
+                                    self.world_bounds_max[1] - margin,
+                                );
+                                self.camera.position.z = self.camera.position.z.clamp(
+                                    self.world_bounds_min[2] + 0.1,
+                                    self.world_bounds_max[2] - 0.1,
+                                );
                             }
                         }
                     });
@@ -1383,13 +1516,16 @@ impl App {
         // Write directly to persistently mapped memory (no map/unmap overhead)
         memcpy(&ubo, self.data.uniform_buffers_mapped[image_index].cast(), 1);
 
-        // Upload lighting UBO: only camera_pos changes per frame, write it directly
+        // Upload lighting UBO for the current swapchain image only.
+        // Use the cached UBO and set camera_pos here so we avoid writing
+        // into buffers that the GPU may be reading for other in-flight
+        // frames (this prevents visual corruption / flicker).
         {
+            let mut ubo = self.cached_light_ubo.clone();
             let cam_pos = self.camera.position;
-            // Write camera_pos at offset 0 of the mapped light UBO (first 16 bytes)
-            let cam_data: [f32; 4] = [cam_pos.x, cam_pos.y, cam_pos.z, 0.0];
-            let dst = self.data.light_uniform_buffers_mapped[image_index] as *mut [f32; 4];
-            *dst = cam_data;
+            ubo.camera_pos = [cam_pos.x, cam_pos.y, cam_pos.z, 0.0];
+            let dst = self.data.light_uniform_buffers_mapped[image_index] as *mut LightingUBO;
+            memcpy(&ubo, dst.cast(), 1);
         }
 
         Ok(())

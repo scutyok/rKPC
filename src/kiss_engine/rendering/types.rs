@@ -25,7 +25,7 @@ pub const MOUSE_SENSITIVITY: f32 = 0.1;
 pub const MAX_LIGHTS: usize = 128;
 
 // Re-export shadow constants and types from the shadows module
-pub use crate::shadows::{GpuShadowCaster, MAX_SHADOW_CASTERS};
+pub use crate::ShadowObj::{GpuShadowCaster, MAX_SHADOW_CASTERS};
 
 // Error types
 #[derive(Debug, Error)]

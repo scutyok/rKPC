@@ -86,6 +86,10 @@ fn main() -> Result<()> {
     let mut last_time = Instant::now();
     let mut mouse_locked = true;
     let mut smooth_fps: f32 = 0.0;
+    // Track last window title to avoid updating it every frame
+    let mut last_window_title = String::from("KISS Psycho Circus: The Nightmare Child [F1: Debug Menu]");
+    // Reused buffer for converting egui font atlas to RGBA bytes
+    let mut font_rgba: Vec<u8> = Vec::new();
     
     // Set initial title after load
     window.set_title("KISS Psycho Circus: The Nightmare Child [F1: Debug Menu]");
@@ -128,7 +132,11 @@ fn main() -> Result<()> {
                     if let Some(world_path) = app.world_chooser.take_pending_load() {
                         let map_name = WorldChooser::get_world_display_name(&world_path);
                         app.loading_state = LoadingState::Loading(map_name.clone());
-                        window.set_title(&format!("Loading: {}...", map_name));
+                        let new_title = format!("Loading: {}...", map_name);
+                        if new_title != last_window_title {
+                            window.set_title(&new_title);
+                            last_window_title = new_title;
+                        }
 
                         // Try to load a level-specific loading screen image
                         {
@@ -172,7 +180,11 @@ fn main() -> Result<()> {
                         app.loading_state = LoadingState::Ready;
                         app.loading_texture_id = None;
                         unsafe { egui_renderer.clear_user_texture(&app.device); }
-                        window.set_title("KISS Psycho Circus: The Nightmare Child [F1: World Select]");
+                        let new_title = String::from("KISS Psycho Circus: The Nightmare Child [F1: World Select]");
+                        if new_title != last_window_title {
+                            window.set_title(&new_title);
+                            last_window_title = new_title;
+                        }
                     }
                     
                     // Run egui UI
@@ -187,21 +199,20 @@ fn main() -> Result<()> {
                         let needs_update = full_output.textures_delta.set.iter()
                             .any(|(id, _)| *id == egui::TextureId::default());
                         if needs_update {
-                            // Get the FULL font atlas from egui context
-                            let (font_pixels, font_w, font_h) = egui_ctx.fonts(|fonts| {
+                            // Get the FULL font atlas from egui context and convert into RGBA bytes
+                            let (image_pixels, font_w, font_h) = egui_ctx.fonts(|fonts| {
                                 let image = fonts.image();
-                                let w = image.width() as u32;
-                                let h = image.height() as u32;
-                                let mut rgba = Vec::with_capacity((w * h * 4) as usize);
-                                for &a in image.pixels.iter() {
-                                    let alpha = (a * 255.0).round().clamp(0.0, 255.0) as u8;
-                                    rgba.push(255u8);
-                                    rgba.push(255u8);
-                                    rgba.push(255u8);
-                                    rgba.push(alpha);
-                                }
-                                (rgba, w, h)
+                                (image.pixels.clone(), image.width() as u32, image.height() as u32)
                             });
+                            font_rgba.clear();
+                            font_rgba.reserve((font_w * font_h * 4) as usize);
+                            for &a in image_pixels.iter() {
+                                let alpha = (a * 255.0).round().clamp(0.0, 255.0) as u8;
+                                font_rgba.push(255u8);
+                                font_rgba.push(255u8);
+                                font_rgba.push(255u8);
+                                font_rgba.push(alpha);
+                            }
                             unsafe {
                                 egui_renderer.replace_font_texture(
                                     &app.instance,
@@ -209,7 +220,7 @@ fn main() -> Result<()> {
                                     app.data.physical_device,
                                     app.data.command_pool,
                                     app.data.graphics_queue,
-                                    &font_pixels,
+                                    &font_rgba,
                                     font_w,
                                     font_h,
                                 ).unwrap();
@@ -226,12 +237,16 @@ fn main() -> Result<()> {
                             .get(app.world_chooser.selected_index)
                             .map(|p| WorldChooser::get_world_display_name(p))
                             .unwrap_or_default();
-                        window.set_title(&format!(
+                        let new_title = format!(
                             "World Chooser [{}/{}]: {} | Click to select, double-click to load | F1/Esc to close",
                             app.world_chooser.selected_index + 1,
                             app.world_chooser.worlds.len(),
                             selected_name
-                        ));
+                        );
+                        if new_title != last_window_title {
+                            window.set_title(&new_title);
+                            last_window_title = new_title;
+                        }
                     }
                     
                     // Update mouse grab based on UI state
