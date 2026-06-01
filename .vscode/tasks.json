@@ -1,0 +1,48 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run Game: Release (dedicated terminal)",
+      "type": "shell",
+      "command": "cargo run --release",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "echo": true,
+        "focus": false,
+        "showReuseMessage": true,
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Game: Debug (dedicated terminal)",
+      "type": "shell",
+      "command": "cargo run",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "echo": true,
+        "focus": false,
+        "showReuseMessage": true,
+        "clear": false
+      },
+      "problemMatcher": []
+    }
+    ,
+    {
+      "label": "Run Game: Release (external cmd)",
+      "type": "shell",
+      "command": "cmd.exe /c start \"RustKPC - Release\" cmd /k \"cd /d ${workspaceFolder} && cargo run --release\"",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Game: Debug (external cmd)",
+      "type": "shell",
+      "command": "cmd.exe /c start \"RustKPC - Debug\" cmd /k \"cd /d ${workspaceFolder} && cargo run\"",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    }
+  ]
+}

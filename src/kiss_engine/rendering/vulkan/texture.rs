@@ -48,12 +48,13 @@ fn needs_chromakey(path: &std::path::Path) -> bool {
     // Match by filename or path fragment
     let patterns: &[&str] = &[
         "cobweb", "spiderweb", "web",
-        "fence", "bars",
+        "fence", "bars", "grate",
         "chain", "rope",
-        "vines", "ivy",
+        "vines", "vine", "ivy",
         "railing",
         "lattice",
         "net",
+        "branch", "leaf", "leaves",
         "chlinkdeluxe",
         "ladder_met",
     ];

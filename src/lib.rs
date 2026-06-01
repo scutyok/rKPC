@@ -64,6 +64,9 @@ pub mod CCreature;
 #[path = "kiss_engine/Mechanics/levelscripting/scripted_sequence.rs"]
 pub mod scripted_sequence;
 
+#[path = "kiss_engine/Mechanics/levelscripting/trigger.rs"]
+pub mod trigger;
+
 #[path = "kiss_engine/Resources/dat/world_loader.rs"]
 pub mod world_loader;
 

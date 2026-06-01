@@ -33,6 +33,9 @@ use rustKPC::vulkan;
 use rustKPC::world_chooser::{LoadingState, WorldChooser};
 use rustKPC::world_loader::load_dat_model;
 
+const SKYBOX_HORIZONTAL_SIZE: f32 = 5000.0;
+const SKYBOX_Z_RAISE: f32 = 1.0;
+
 //******************************************************************/
 //
 // Our Vulkan app.
@@ -127,18 +130,9 @@ impl App {
         let initial_game_objects = loaded.game_objects;
         let initial_entity_cylinders = loaded.entity_cylinders;
 
-        // Compute world bounds from loaded vertex data so we can optionally
-        // enforce a bounded world box (used for clamping camera movement).
-        let mut world_min = [f32::INFINITY, f32::INFINITY, f32::INFINITY];
-        let mut world_max = [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
-        for v in &data.vertices {
-            world_min[0] = world_min[0].min(v.pos.x);
-            world_min[1] = world_min[1].min(v.pos.y);
-            world_min[2] = world_min[2].min(v.pos.z);
-            world_max[0] = world_max[0].max(v.pos.x);
-            world_max[1] = world_max[1].max(v.pos.y);
-            world_max[2] = world_max[2].max(v.pos.z);
-        }
+        // Compute world bounds from non-sky draw groups. Sky geometry is
+        // projected separately and should not expand player/world limits.
+        let (world_min, world_max) = Self::compute_non_sky_world_bounds(&data);
         println!(
             "World bounds: min=({:.2},{:.2},{:.2}) max=({:.2},{:.2},{:.2})",
             world_min[0], world_min[1], world_min[2], world_max[0], world_max[1], world_max[2]
@@ -272,15 +266,56 @@ impl App {
         LightingUbo::build_light_ubo(world_lights, shadow_positions, fog_color, fog_near, fog_far, fog_enabled, sky_fog_far)
     }
 
+    fn compute_non_sky_world_bounds(data: &AppData) -> ([f32; 3], [f32; 3]) {
+        let mut world_min = [f32::INFINITY; 3];
+        let mut world_max = [f32::NEG_INFINITY; 3];
+        let mut any = false;
+
+        for group in data.draw_groups.iter().take(data.sky_draw_group_start) {
+            let start = group.first_index as usize;
+            let end = (group.first_index + group.index_count) as usize;
+            for i in start..end.min(data.indices.len()) {
+                let vi = data.indices[i] as usize;
+                if let Some(v) = data.vertices.get(vi) {
+                    let p = v.pos;
+                    world_min[0] = world_min[0].min(p.x);
+                    world_min[1] = world_min[1].min(p.y);
+                    world_min[2] = world_min[2].min(p.z);
+                    world_max[0] = world_max[0].max(p.x);
+                    world_max[1] = world_max[1].max(p.y);
+                    world_max[2] = world_max[2].max(p.z);
+                    any = true;
+                }
+            }
+        }
+
+        if any {
+            (world_min, world_max)
+        } else {
+            ([0.0; 3], [0.0; 3])
+        }
+    }
+
     //******************************************************************/
     //
     // Upload the full cached light UBO to all swapchain images' persistently mapped memory.
     // Called once when lights change (map load / swapchain recreate).
     //
     //******************************************************************/
-    unsafe fn upload_light_ubo_to_all(&self) {
+    pub unsafe fn upload_light_ubo_to_all(&self) {
+        // When dynamic lighting is disabled, ensure we do not upload any
+        // dynamic lights/shadows into GPU memory even if `cached_light_ubo`
+        // contains stale values.
+        let ubo_to_upload = if self.dynamic_lighting {
+            self.cached_light_ubo.clone()
+        } else {
+            let mut tmp = self.cached_light_ubo.clone();
+            tmp.light_count = 0;
+            tmp.shadow_count = 0;
+            tmp
+        };
         for mapped in &self.data.light_uniform_buffers_mapped {
-            memcpy(&self.cached_light_ubo, (*mapped).cast(), 1);
+            memcpy(&ubo_to_upload, (*mapped).cast(), 1);
         }
     }
 
@@ -534,17 +569,35 @@ impl App {
                 sky_opacity_bytes,
             );
 
-            // Sky model transform. If `bounded_world` is enabled, draw the sky
-            // at its fixed world coordinates (no recentering); otherwise keep
-            // the existing behaviour of recentring the sky on the camera.
-            let sky_t = self.data.sky_translation;
-            let sky_scale = 1.0;
+            // Source-style 3D sky projection: treat the loaded sky BSPs as a
+            // small model, scale them into a fixed-size volume, then center
+            // that volume over the actual level.
             if self.bounded_world {
-                // Render sky at its original world translation so it's enclosed
-                // within the map. Apply a small upward raise to avoid z-fighting.
-                let sky_z_raise = 1.0_f32; // raise the sky dome upward
-                let sky_model = Mat4::from_translation(vec3(sky_t[0], sky_t[1], sky_t[2] + sky_z_raise))
-                    * Mat4::from_scale(sky_scale);
+                let sky_min = self.data.sky_bounds_min;
+                let sky_max = self.data.sky_bounds_max;
+                let sky_extent_x = (sky_max[0] - sky_min[0]).abs();
+                let sky_extent_y = (sky_max[1] - sky_min[1]).abs();
+                let sky_extent = sky_extent_x.max(sky_extent_y);
+
+                let sky_model = if sky_extent > 0.001 {
+                    let sky_center = vec3(
+                        (sky_min[0] + sky_max[0]) * 0.5,
+                        (sky_min[1] + sky_max[1]) * 0.5,
+                        (sky_min[2] + sky_max[2]) * 0.5,
+                    );
+                    let world_center = vec3(
+                        (self.world_bounds_min[0] + self.world_bounds_max[0]) * 0.5,
+                        (self.world_bounds_min[1] + self.world_bounds_max[1]) * 0.5,
+                        (self.world_bounds_min[2] + self.world_bounds_max[2]) * 0.5 + SKYBOX_Z_RAISE,
+                    );
+                    let sky_scale = SKYBOX_HORIZONTAL_SIZE / sky_extent;
+                    Mat4::from_translation(world_center)
+                        * Mat4::from_scale(sky_scale)
+                        * Mat4::from_translation(-sky_center)
+                } else {
+                    let sky_t = self.data.sky_translation;
+                    Mat4::from_translation(vec3(sky_t[0], sky_t[1], sky_t[2] + SKYBOX_Z_RAISE))
+                };
                 let sky_model_bytes = std::slice::from_raw_parts(
                     &sky_model as *const Mat4 as *const u8,
                     size_of::<Mat4>(),
@@ -557,14 +610,15 @@ impl App {
                     sky_model_bytes,
                 );
             } else {
-                let sky_z_raise = 1.0_f32; // raise the sky dome upward
+                let sky_t = self.data.sky_translation;
+                let sky_scale = 1.0;
                 let eye_z = if self.player_mode == collision::PlayerMode::Walk && !self.is_free_cam {
                     self.eye_offset_walk
                 } else {
                     0.0
                 };
                 let cam_eye = self.camera.position + vec3(0.0, 0.0, eye_z);
-                let sky_model = Mat4::from_translation(cam_eye + vec3(0.0, 0.0, sky_z_raise))
+                let sky_model = Mat4::from_translation(cam_eye + vec3(0.0, 0.0, SKYBOX_Z_RAISE))
                     * Mat4::from_scale(sky_scale)
                     * Mat4::from_translation(-vec3(sky_t[0], sky_t[1], sky_t[2]));
                 let sky_model_bytes = std::slice::from_raw_parts(
@@ -1291,6 +1345,11 @@ impl App {
                                 self.cached_light_ubo.shadow_count = 0;
                             }
                             unsafe { self.upload_light_ubo_to_all(); }
+
+                            // Persist the setting so it survives restarts
+                            if let Err(e) = (crate::settings::Settings { dynamic_lighting: self.dynamic_lighting }).save() {
+                                warn!("Failed to save settings: {}", e);
+                            }
                         }
                         ui.add_space(20.0);
                         if ui.checkbox(&mut self.bounded_world, "Bounded World").changed() {
@@ -1419,6 +1478,15 @@ impl App {
                                     if let Some(path) = self.world_chooser.confirm_selection() {
                                         self.world_chooser.pending_load = Some(path);
                                         *mouse_locked = true;
+                                        // Persist settings when closing the world chooser via double-click load
+                                        if let Err(e) = (crate::settings::Settings { dynamic_lighting: self.dynamic_lighting }).save() {
+                                            warn!("Failed to save settings: {}", e);
+                                        }
+                                        if !self.dynamic_lighting {
+                                            self.cached_light_ubo.light_count = 0;
+                                            self.cached_light_ubo.shadow_count = 0;
+                                            unsafe { self.upload_light_ubo_to_all(); }
+                                        }
                                     }
                                 }
                             }
@@ -1439,6 +1507,15 @@ impl App {
                             if let Some(path) = self.world_chooser.confirm_selection() {
                                 self.world_chooser.pending_load = Some(path);
                                 *mouse_locked = true;
+                                // Persist settings when closing the world chooser via Load Selected
+                                if let Err(e) = (crate::settings::Settings { dynamic_lighting: self.dynamic_lighting }).save() {
+                                    warn!("Failed to save settings: {}", e);
+                                }
+                                if !self.dynamic_lighting {
+                                    self.cached_light_ubo.light_count = 0;
+                                    self.cached_light_ubo.shadow_count = 0;
+                                    unsafe { self.upload_light_ubo_to_all(); }
+                                }
                             }
                         }
 
@@ -1516,6 +1593,9 @@ impl App {
         self.entity_cylinders = loaded.entity_cylinders;
         self.trigger_draw_groups = loaded.trigger_draw_groups;
         self.elapsed_time = 0.0;
+        let (world_min, world_max) = Self::compute_non_sky_world_bounds(&self.data);
+        self.world_bounds_min = world_min;
+        self.world_bounds_max = world_max;
         // Hide triggers by default on world load
         if !self.show_triggers {
             for &(dg_idx, _) in &self.trigger_draw_groups {
@@ -1534,6 +1614,12 @@ impl App {
         let shadow_pos = self.game_objects.shadow_caster_positions();
         self.cached_light_ubo = Self::build_light_ubo(
             &self.world_lights, &shadow_pos, self.fog_color, self.fog_near, self.fog_far, self.fog_enabled, self.sky_fog_far);
+        // Respect user's dynamic lighting preference when applying the freshly
+        // built UBO so loading a world does not re-enable blob shadows/lights.
+        if !self.dynamic_lighting {
+            self.cached_light_ubo.light_count = 0;
+            self.cached_light_ubo.shadow_count = 0;
+        }
         self.upload_light_ubo_to_all();
 
         //******************************************************************/
@@ -1665,6 +1751,15 @@ impl App {
         //******************************************************************/
         {
             let mut ubo = self.cached_light_ubo.clone();
+            // Enforce the current `dynamic_lighting` state before uploading
+            // so a stale `cached_light_ubo` cannot re-enable lights.
+            if !self.dynamic_lighting {
+                if ubo.light_count != 0 || ubo.shadow_count != 0 {
+                    warn!("dynamic_lighting is disabled but UBO contains lights/shadows (lc={}, sc={}) — zeroing before upload", ubo.light_count, ubo.shadow_count);
+                }
+                ubo.light_count = 0;
+                ubo.shadow_count = 0;
+            }
             let cam_pos = self.camera.position;
             ubo.camera_pos = [cam_pos.x, cam_pos.y, cam_pos.z, 0.0];
             let dst = self.data.light_uniform_buffers_mapped[image_index] as *mut LightingUBO;

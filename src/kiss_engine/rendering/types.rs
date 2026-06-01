@@ -243,6 +243,9 @@ pub struct AppData {
     pub sky_draw_group_start: usize,
     /// Sky world model translation (in scaled world coords)
     pub sky_translation: [f32; 3],
+    /// Bounds of the loaded sky model vertices, before render-time projection.
+    pub sky_bounds_min: [f32; 3],
+    pub sky_bounds_max: [f32; 3],
     /// Center of the main world model bounding box (in renderer coords)
     pub map_center: [f32; 3],
     /// Preferred texture subfolder derived from current DAT path (e.g. "R2M1")

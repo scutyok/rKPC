@@ -15,6 +15,7 @@ use crate::LightObj;
 use crate::types::*;
 use crate::vulkan::texture::get_texture_dimensions;
 use crate::DemoSkyWorldModel::SkyModelInfo;
+use crate::trigger::TriggerInfo;
 
 //******************************************************************/
 //
@@ -51,6 +52,8 @@ pub struct LoadedWorld {
     pub entity_cylinders: Vec<collision::EntityCylinder>,
     /// Draw-group indices that belong to trigger / volume sub-models (toggleable).
     pub trigger_draw_groups: Vec<(usize, u32)>,
+    /// Triggers and volumes parsed from the DAT objects and sub-world models.
+    pub triggers: Vec<TriggerInfo>,
 }
 
 //******************************************************************/
@@ -808,6 +811,8 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
 
     // Mark where sky draw groups will start (after all world + ABC + sub-world groups)
     data.sky_draw_group_start = data.draw_groups.len();
+    data.sky_bounds_min = [f32::INFINITY; 3];
+    data.sky_bounds_max = [f32::NEG_INFINITY; 3];
 
     // Extract sky world models and collect SkyModelInfo for animation
     let mut sky_model_infos: Vec<SkyModelInfo> = Vec::new();
@@ -882,8 +887,16 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
                             dat_vert.normal[2],
                             dat_vert.normal[1],
                         );
+                        let pos = vec3(dat_vert.pos[0], dat_vert.pos[1], dat_vert.pos[2]);
+                        data.sky_bounds_min[0] = data.sky_bounds_min[0].min(pos.x);
+                        data.sky_bounds_min[1] = data.sky_bounds_min[1].min(pos.y);
+                        data.sky_bounds_min[2] = data.sky_bounds_min[2].min(pos.z);
+                        data.sky_bounds_max[0] = data.sky_bounds_max[0].max(pos.x);
+                        data.sky_bounds_max[1] = data.sky_bounds_max[1].max(pos.y);
+                        data.sky_bounds_max[2] = data.sky_bounds_max[2].max(pos.z);
+
                         data.vertices.push(Vertex {
-                            pos: vec3(dat_vert.pos[0], dat_vert.pos[1], dat_vert.pos[2]),
+                            pos,
                             color: vec3(dat_vert.color[0], dat_vert.color[1], dat_vert.color[2]),
                             tex_coord: vec2(
                                 dat_vert.tex_coord[0] / tex_width as f32,
@@ -937,6 +950,10 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
         println!("=== Sky groups: {} (starting at index {}) ===",
             data.draw_groups.len() - data.sky_draw_group_start,
             data.sky_draw_group_start);
+        if data.sky_bounds_min[0].is_infinite() {
+            data.sky_bounds_min = [0.0; 3];
+            data.sky_bounds_max = [0.0; 3];
+        }
     }
 
     // Store texture names and dimensions for later loading
@@ -1288,6 +1305,11 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
         .collect();
     log::info!("Built {} entity cylinders for collision", entity_cylinders.len());
 
+    let triggers = crate::trigger::collect_triggers(&dat_file, &trigger_volumes, scale);
+    if let Err(e) = crate::trigger::export_triggers_json(&triggers, &path) {
+        warn!("Failed to export triggers JSON: {}", e);
+    }
+
     Ok(LoadedWorld {
         lights: world_lights,
         collision_positions,
@@ -1296,6 +1318,7 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
         fog: level_fog,
         entity_cylinders,
         trigger_draw_groups,
+        triggers,
     })
 }
 

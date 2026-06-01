@@ -8,6 +8,7 @@
 )]
 
 mod app;
+mod settings;
 
 use std::time::Instant;
 
@@ -65,6 +66,21 @@ fn main() -> Result<()> {
 
     // Create App
     let mut app = unsafe { App::create(&window)? };
+
+    // Load saved settings and apply
+    match settings::Settings::load() {
+        Ok(s) => {
+            app.dynamic_lighting = s.dynamic_lighting;
+            if !app.dynamic_lighting {
+                app.cached_light_ubo.light_count = 0;
+                app.cached_light_ubo.shadow_count = 0;
+                unsafe { app.upload_light_ubo_to_all(); }
+            }
+        }
+        Err(e) => {
+            warn!("Failed to load settings: {}", e);
+        }
+    }
     
     // Create egui renderer (after app is created so we have Vulkan resources)
     let mut egui_renderer = unsafe {
@@ -300,6 +316,17 @@ fn main() -> Result<()> {
                                 window.set_cursor_visible(false);
                                 // Restore player mode from free cam toggle state
                                 app.player_mode = if app.is_free_cam { collision::PlayerMode::Flying } else { collision::PlayerMode::Walk };
+                                // Persist settings when closing the world chooser so quick interactions
+                                // (e.g. toggling a checkbox then immediately pressing F1) are not lost.
+                                if let Err(e) = (crate::settings::Settings { dynamic_lighting: app.dynamic_lighting }).save() {
+                                    warn!("Failed to save settings: {}", e);
+                                }
+                                // If dynamic lighting was just disabled, ensure the GPU UBO reflects that immediately.
+                                if !app.dynamic_lighting {
+                                    app.cached_light_ubo.light_count = 0;
+                                    app.cached_light_ubo.shadow_count = 0;
+                                    unsafe { app.upload_light_ubo_to_all(); }
+                                }
                             }
                         }
                         PhysicalKey::Code(KeyCode::F2) if pressed => {
@@ -320,6 +347,15 @@ fn main() -> Result<()> {
                                 mouse_locked = true;
                                 let _ = window.set_cursor_grab(CursorGrabMode::Confined);
                                 window.set_cursor_visible(false);
+                                // Persist settings when closing the world chooser via Escape as well
+                                if let Err(e) = (crate::settings::Settings { dynamic_lighting: app.dynamic_lighting }).save() {
+                                    warn!("Failed to save settings: {}", e);
+                                }
+                                if !app.dynamic_lighting {
+                                    app.cached_light_ubo.light_count = 0;
+                                    app.cached_light_ubo.shadow_count = 0;
+                                    unsafe { app.upload_light_ubo_to_all(); }
+                                }
                             } else {
                                 mouse_locked = !mouse_locked;
                                 if mouse_locked {

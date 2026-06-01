@@ -214,15 +214,24 @@ impl DtxFile {
         let _palette_header_1 = reader.read_u32::<LittleEndian>()?;
         let _palette_header_2 = reader.read_u32::<LittleEndian>()?;
 
-        // Read 256-color palette as ARGB (per Godot reference), output as RGBA
+        // Read 256-color palette as ARGB (per Godot reference), output as RGBA.
+        // Some opaque palettes leave every alpha byte at 0, while masked
+        // textures use a mixture of low/zero alpha and 255. Preserve real
+        // alpha when present, but keep all-zero palettes opaque.
         let mut palette = Vec::with_capacity(256);
+        let mut any_alpha = false;
         for _ in 0..256 {
             let a = reader.read_u8()?;
             let r = reader.read_u8()?;
             let g = reader.read_u8()?;
             let b = reader.read_u8()?;
-            // Store as RGBA, force alpha to 255 for opaque rendering
-            palette.push((r, g, b, if a == 0 { 255 } else { a }));
+            any_alpha |= a != 0;
+            palette.push((r, g, b, a));
+        }
+        if !any_alpha {
+            for (_, _, _, a) in &mut palette {
+                *a = 255;
+            }
         }
 
         // Read indexed pixel data
@@ -256,16 +265,23 @@ impl DtxFile {
         reader.read_exact(&mut section_header)?;
         let _section_length = reader.read_u32::<LittleEndian>()?;
 
-        // Read 256-color palette (packed 32-bit ARGB)
+        // Read 256-color palette (packed 32-bit ARGB). As above, preserve
+        // mixed alpha palettes and only treat all-zero alpha palettes as opaque.
         let mut palette = Vec::with_capacity(256);
+        let mut any_alpha = false;
         for _ in 0..256 {
             let packed = reader.read_u32::<LittleEndian>()?;
             let a = ((packed >> 24) & 0xFF) as u8;
             let r = ((packed >> 16) & 0xFF) as u8;
             let g = ((packed >> 8) & 0xFF) as u8;
             let b = (packed & 0xFF) as u8;
-            // Store as RGBA, force alpha to 255
-            palette.push((r, g, b, if a == 0 { 255 } else { a }));
+            any_alpha |= a != 0;
+            palette.push((r, g, b, a));
+        }
+        if !any_alpha {
+            for (_, _, _, a) in &mut palette {
+                *a = 255;
+            }
         }
 
         // Convert indexed to RGBA
