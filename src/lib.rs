@@ -85,7 +85,7 @@ pub mod egui_renderer;
 #[path = "kiss_engine/Resources/pcx.rs"]
 pub mod pcx;
 
-#[path = "kiss_engine/Mechanics/collision/KCollision.rs"]
+#[path = "kiss_engine/Mechanics/collision/mod.rs"]
 pub mod collision;
 
 #[path = "kiss_engine/Rendering/OcclusionCulling.rs"]

@@ -1,6 +1,6 @@
 pub use crate::util::math::Vector3;
 pub use crate::util::geometry::{AABB,Segment};
-pub use super::KHeightProvider::HeightProvider;
+use super::HeightProvider;
 
 //******************************************************************/
 //
