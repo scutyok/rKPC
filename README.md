@@ -26,13 +26,13 @@ It started as a [DLL injection project/D3D9 hook](http://https://github.com/scut
 
 - Check TODO file
 
-<h2>How to use</h2>
+<h2>How to use (two ways)</h2>
 
 <ol>
-  <li>Open project folder in VSC (or any IDE of your liking)</li>
-  <li>Compile with "cargo run --bin rustKPC"</li>
-  <li>Wait until all the textures loads</li>
-  <li>You can now fully see the map and move</li>
+	<li><h3>Compiling</h3>
+  with "cargo run --release"</li>
+	<li><h3>Directly running</h3>
+  open the "run_release.bat" file</li>
 </ol>
 
 <h2>Keybinds</h2>
