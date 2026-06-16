@@ -55,6 +55,7 @@ fn needs_chromakey(path: &std::path::Path) -> bool {
         "lattice",
         "net",
         "branch", "leaf", "leaves",
+        "flame", "torch",
         "chlinkdeluxe",
         "ladder_met",
     ];

@@ -6,10 +6,11 @@ use std::mem::size_of;
 use thiserror::Error;
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia::vk::KhrSurfaceExtensionInstanceCommands;
+use crate::util::math::*;
 
-// Type aliases
-pub type Vec2 = cgmath::Vector2<f32>;
-pub type Vec3 = cgmath::Vector3<f32>;
+// Type aliases 
+pub type Vec2 = Vector2;
+pub type Vec3 = Vector3;
 pub type Mat4 = cgmath::Matrix4<f32>;
 
 // Constants
@@ -94,17 +95,20 @@ impl Eq for Vertex {}
 
 impl Hash for Vertex {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.pos[0].to_bits().hash(state);
-        self.pos[1].to_bits().hash(state);
-        self.pos[2].to_bits().hash(state);
-        self.color[0].to_bits().hash(state);
-        self.color[1].to_bits().hash(state);
-        self.color[2].to_bits().hash(state);
-        self.tex_coord[0].to_bits().hash(state);
-        self.tex_coord[1].to_bits().hash(state);
-        self.normal[0].to_bits().hash(state);
-        self.normal[1].to_bits().hash(state);
-        self.normal[2].to_bits().hash(state);
+        self.pos.x.to_bits().hash(state);
+        self.pos.y.to_bits().hash(state);
+        self.pos.z.to_bits().hash(state);
+
+        self.color.x.to_bits().hash(state);
+        self.color.y.to_bits().hash(state);
+        self.color.z.to_bits().hash(state);
+
+        self.tex_coord.x.to_bits().hash(state);
+        self.tex_coord.y.to_bits().hash(state);
+
+        self.normal.x.to_bits().hash(state);
+        self.normal.y.to_bits().hash(state);
+        self.normal.z.to_bits().hash(state);
     }
 }
 

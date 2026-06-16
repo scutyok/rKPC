@@ -48,109 +48,6 @@ pub const FLAG_DEFORMATION: u8 = 0x04;
 // ─── Data Types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct AbcVector {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
-}
-
-impl AbcVector {
-    pub fn lerp(&self, other: &Self, t: f32) -> Self {
-        Self {
-            x: self.x + t * (other.x - self.x),
-            y: self.y + t * (other.y - self.y),
-            z: self.z + t * (other.z - self.z),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct AbcQuaternion {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
-    pub w: f32,
-}
-
-impl AbcQuaternion {
-    /// Conjugate (negate x, y, z) for flip_anim
-    pub fn conjugated(&self) -> Self {
-        Self {
-            x: -self.x,
-            y: -self.y,
-            z: -self.z,
-            w: self.w,
-        }
-    }
-
-    pub fn dot(&self, other: &Self) -> f32 {
-        self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w
-    }
-
-    pub fn normalized(&self) -> Self {
-        let len = (self.x * self.x + self.y * self.y + self.z * self.z + self.w * self.w).sqrt();
-        if len > 0.0 {
-            Self { x: self.x / len, y: self.y / len, z: self.z / len, w: self.w / len }
-        } else {
-            *self
-        }
-    }
-
-    /// Spherical linear interpolation for smooth rotation blending.
-    pub fn slerp(&self, other: &Self, t: f32) -> Self {
-        let mut d = self.dot(other);
-        let mut other = *other;
-        // Take the shorter arc
-        if d < 0.0 {
-            other = Self { x: -other.x, y: -other.y, z: -other.z, w: -other.w };
-            d = -d;
-        }
-        // Near-parallel: fall back to normalised lerp
-        if d > 0.9995 {
-            return Self {
-                x: self.x + t * (other.x - self.x),
-                y: self.y + t * (other.y - self.y),
-                z: self.z + t * (other.z - self.z),
-                w: self.w + t * (other.w - self.w),
-            }.normalized();
-        }
-        let theta = d.acos();
-        let sin_theta = theta.sin();
-        let s0 = ((1.0 - t) * theta).sin() / sin_theta;
-        let s1 = (t * theta).sin() / sin_theta;
-        Self {
-            x: s0 * self.x + s1 * other.x,
-            y: s0 * self.y + s1 * other.y,
-            z: s0 * self.z + s1 * other.z,
-            w: s0 * self.w + s1 * other.w,
-        }
-    }
-
-    /// Convert to a 3x3 rotation matrix (row-major)
-    pub fn to_matrix3(&self) -> [[f32; 3]; 3] {
-        let (x, y, z, w) = (self.x, self.y, self.z, self.w);
-        let x2 = x + x;
-        let y2 = y + y;
-        let z2 = z + z;
-        let xx = x * x2;
-        let xy = x * y2;
-        let xz = x * z2;
-        let yy = y * y2;
-        let yz = y * z2;
-        let zz = z * z2;
-        let wx = w * x2;
-        let wy = w * y2;
-        let wz = w * z2;
-
-        [
-            [1.0 - (yy + zz), xy - wz, xz + wy],
-            [xy + wz, 1.0 - (xx + zz), yz - wx],
-            [xz - wy, yz + wx, 1.0 - (xx + yy)],
-        ]
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
 pub struct AbcNormal {
     pub x: i8,
     pub y: i8,
@@ -189,7 +86,7 @@ pub struct AbcTriangle {
 
 #[derive(Debug, Clone)]
 pub struct AbcVertex {
-    pub position: AbcVector,
+    pub position: Vector3,
     pub normal: AbcNormal,
     pub transformation_index: u8,
     pub replacements: [u16; 2],
@@ -198,8 +95,8 @@ pub struct AbcVertex {
 #[derive(Debug, Clone)]
 pub struct AbcPiece {
     pub name: String,
-    pub bounds_min: AbcVector,
-    pub bounds_max: AbcVector,
+    pub bounds_min: Vector3,
+    pub bounds_max: Vector3,
     pub num_lods: u32,
     pub vertex_start_nums: Vec<u16>,
     pub triangles: Vec<AbcTriangle>,
@@ -211,16 +108,16 @@ pub struct AbcPiece {
 
 #[derive(Debug, Clone)]
 pub struct AbcNode {
-    pub bounds_min: AbcVector,
-    pub bounds_max: AbcVector,
+    pub bounds_min: Vector3,
+    pub bounds_max: Vector3,
     pub name: String,
     pub transformation_index: u16,
     pub flags: u8,
     pub md_vert_list: Vec<u16>,
     pub num_children: u32,
-    /// Index of parent node (-1 for root)
+    // Index of parent node (-1 for root)
     pub parent_index: i32,
-    /// Bind matrix (4x4 row-major), calculated from first animation frame
+    // Bind matrix (4x4 row-major), calculated from first animation frame
     pub bind_matrix: [[f32; 4]; 4],
 }
 
@@ -229,29 +126,29 @@ pub struct AbcNode {
 #[derive(Debug, Clone)]
 pub struct AbcKeyframeInfo {
     pub time_index: u32,
-    pub bounds_min: AbcVector,
-    pub bounds_max: AbcVector,
+    pub bounds_min: Vector3,
+    pub bounds_max: Vector3,
     pub frame_string: String,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AbcNodeKeyframe {
-    pub translation: AbcVector,
-    pub rotation: AbcQuaternion,
+    pub translation: Vector3,
+    pub rotation: Quaternion,
 }
 
 #[derive(Debug, Clone)]
 pub struct AbcNodeDeformation {
     /// Decompressed vertex positions per keyframe, flattened [keyframe][md_vert]
-    pub positions: Vec<AbcVector>,
+    pub positions: Vec<Vector3>,
 }
 
 #[derive(Debug, Clone)]
 pub struct AbcAnimation {
     pub name: String,
     pub length_ms: u32,
-    pub bounds_min: AbcVector,
-    pub bounds_max: AbcVector,
+    pub bounds_min: Vector3,
+    pub bounds_max: Vector3,
     pub keyframes: Vec<AbcKeyframeInfo>,
     /// Per-node, per-keyframe transforms: [node_index][keyframe_index]
     pub node_keyframes: Vec<Vec<AbcNodeKeyframe>>,
@@ -261,7 +158,7 @@ pub struct AbcAnimation {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AbcAnimDims {
-    pub dimensions: AbcVector,
+    pub dimensions: Vector3,
 }
 
 // ─── Transform Info ──────────────────────────────────────────────────────────
@@ -541,7 +438,7 @@ fn read_animation_section<R: Read>(reader: &mut R, nodes: &[AbcNode]) -> Result<
 
                 kfs.push(AbcNodeKeyframe {
                     translation,
-                    rotation: AbcQuaternion {
+                    rotation: Quaternion {
                         x: rx,
                         y: ry,
                         z: rz,
@@ -575,7 +472,7 @@ fn read_animation_section<R: Read>(reader: &mut R, nodes: &[AbcNode]) -> Result<
                 // Decompress
                 deformation.positions.reserve(total);
                 for c in &compressed {
-                    deformation.positions.push(AbcVector {
+                    deformation.positions.push(Vector3 {
                         x: (c[0] as f32 * scale.x) + transform.x,
                         y: (c[1] as f32 * scale.y) + transform.y,
                         z: (c[2] as f32 * scale.z) + transform.z,
@@ -680,8 +577,8 @@ fn mat4_multiply(a: &[[f32; 4]; 4], b: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
     out
 }
 
-fn transform_point(mat: &[[f32; 4]; 4], p: &AbcVector) -> AbcVector {
-    AbcVector {
+fn transform_point(mat: &[[f32; 4]; 4], p: &Vector3) -> Vector3 {
+    Vector3 {
         x: mat[0][0] * p.x + mat[0][1] * p.y + mat[0][2] * p.z + mat[0][3],
         y: mat[1][0] * p.x + mat[1][1] * p.y + mat[1][2] * p.z + mat[1][3],
         z: mat[2][0] * p.x + mat[2][1] * p.y + mat[2][2] * p.z + mat[2][3],
@@ -1582,31 +1479,10 @@ pub fn extract_abc_objects(
         radius_xz: f32,    // horizontal bounding radius
         top_y: f32,         // top surface Y in Lithtech space
     }
-    let mut snapped_entities: Vec<SnappedEntity> = Vec::new();
+    let snapped_entities: Vec<SnappedEntity> = Vec::new();
 
     for (obj_index, obj) in objects.iter().enumerate() {
         let tn = obj.type_name.as_str();
-
-        // ── Determine model filename ───────────────────────────────
-        // Hardcoded model mappings for known types without property-driven models
-        let filename = if tn == "CBarrel" {
-            "models/decos/barrel.abc".to_string()
-        } else if let Some(hardcoded) = hardcoded_item_model(tn, obj, &realm) {
-            hardcoded
-        } else {
-            // Try common property names in priority order (Lithtech uses camelCase)
-            match obj
-                .get_property("ModelName")
-                .or_else(|| obj.get_property("model_name"))
-                .or_else(|| obj.get_property("model"))
-                .or_else(|| obj.get_property("Filename"))
-            {
-                Some(PropertyValue::String(s)) if s.to_ascii_lowercase().ends_with(".abc") => {
-                    s.clone()
-                }
-                _ => continue,
-            }
-        };
 
         // ── Position (required) ────────────────────────────────────
         let pos = match obj.get_position() {
@@ -1628,6 +1504,14 @@ pub fn extract_abc_objects(
             _ => 1.0,
         };
 
+        // ── Rotation (optional, defaults to identity) ──────────────
+        let rot = obj.get_rotation().unwrap_or(Quaternion {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 1.0,
+        });
+
         // ── Skin texture ───────────────────────────────────────────
         let skin = match obj
             .get_property("skin_name")
@@ -1637,6 +1521,61 @@ pub fn extract_abc_objects(
             Some(PropertyValue::String(s)) => s.clone(),
             _ => String::new(),
         };
+
+        // ── Determine model filename ───────────────────────────────
+        // Hardcoded model mappings for known types without property-driven models
+        let filename_opt = if tn == "CBarrel" {
+            Some("models/decos/barrel.abc".to_string())
+        } else if let Some(hardcoded) = hardcoded_item_model(tn, obj, &realm) {
+            Some(hardcoded)
+        } else {
+            // Try common property names in priority order (Lithtech uses camelCase)
+            match obj
+                .get_property("ModelName")
+                .or_else(|| obj.get_property("model_name"))
+                .or_else(|| obj.get_property("model"))
+                .or_else(|| obj.get_property("Filename"))
+            {
+                Some(PropertyValue::String(s)) if s.to_ascii_lowercase().ends_with(".abc") => {
+                    Some(s.clone())
+                }
+                _ => None,
+            }
+        };
+
+        // If no ABC model is present but the object is a CTorch (or colored variant),
+        // create a placeholder PlacedAbcObject so torches appear in the placed list
+        // and later code can generate flame quads for them. Other types without
+        // a model are ignored.
+        if filename_opt.is_none() {
+            if tn == "CTorch" || tn == "CTorchColored" {
+                let resolved_skin = if !skin.is_empty() {
+                    resolve_rez_path(rez_root, &skin)
+                } else if let Some(hs) = hardcoded_item_skin(tn, obj, &realm) {
+                    resolve_rez_path(rez_root, &hs)
+                } else {
+                    String::new()
+                };
+
+                placed.push(PlacedAbcObject {
+                    dat_object_index: obj_index,
+                    type_name: obj.type_name.clone(),
+                    model_filename: String::new(),
+                    skin_filename: resolved_skin.clone(),
+                    position: [pos.x * scale, pos.z * scale, pos.y * scale],
+                    rotation: [rot.x, rot.y, rot.z, rot.w],
+                    mesh: AbcMesh { vertices: Vec::new(), indices: Vec::new() },
+                    anim_frame_meshes: Vec::new(),
+                    anim_keyframe_times_ms: Vec::new(),
+                    anim_duration_ms: 0,
+                });
+                continue;
+            } else {
+                continue;
+            }
+        }
+
+        let filename = filename_opt.unwrap();
 
         let resolved_skin = if !skin.is_empty() {
             resolve_rez_path(rez_root, &skin)
@@ -1690,83 +1629,6 @@ pub fn extract_abc_objects(
         let base_mesh = match abc_model.extract_mesh_lithtech() {
             Some(m) => m,
             None => continue,
-        };
-
-        // ── Floor-snap: adjust Y so model bottom sits on the floor ──
-        // In the original Lithtech engine, ground-based objects call
-        // MoveToFloor() at spawn to drop from their editor position to the
-        // nearest surface below. We approximate this by searching BSP floor
-        // vertices for the highest point below the object.
-        // Height nudge (Lithtech units) added after floor-snap.
-        // Increase to raise objects, decrease to lower them.
-        const FLOOR_SNAP_OFFSET: f32 = 5.0;
-
-        // CModel/CModelDeco objects whose model is a wall-mounted decoration
-        // (light, flame, gargoyle, mask, skull) should NOT be snapped to the floor.
-        let is_wall_mounted = if tn == "CModel" || tn == "CModelDeco" {
-            let lower = filename.to_ascii_lowercase();
-            lower.contains("light")
-                || lower.contains("flameh") || lower.contains("starlight")
-                || lower.contains("garg") || lower.contains("mask")
-                || lower.contains("skull")
-        } else {
-            false
-        };
-
-        let snap = should_snap_to_floor(tn) && !is_wall_mounted;
-        let pos = if snap && !floor_tris.is_empty() {
-            let model_min_y = base_mesh.vertices.iter()
-                .map(|v| v.pos[1] * obj_scale)
-                .fold(f32::MAX, f32::min);
-            let model_max_y = base_mesh.vertices.iter()
-                .map(|v| v.pos[1] * obj_scale)
-                .fold(f32::MIN, f32::max);
-            let model_radius_xz = base_mesh.vertices.iter()
-                .map(|v| {
-                    let mx = v.pos[0] * obj_scale;
-                    let mz = v.pos[2] * obj_scale;
-                    (mx * mx + mz * mz).sqrt()
-                })
-                .fold(0.0_f32, f32::max);
-
-            // Find best floor: BSP surface or top of an already-snapped entity.
-            let mut best_floor = find_floor_y(&pos, floor_tris);
-            for ent in &snapped_entities {
-                let dx = pos.x - ent.x;
-                let dz = pos.z - ent.z;
-                let horiz_dist = (dx * dx + dz * dz).sqrt();
-                // Entity top is a valid floor if we overlap horizontally
-                // and the entity top is below our position (with tolerance).
-                if horiz_dist < ent.radius_xz + model_radius_xz
-                    && ent.top_y <= pos.y + 20.0
-                {
-                    match best_floor {
-                        None => best_floor = Some(ent.top_y),
-                        Some(by) if ent.top_y > by => best_floor = Some(ent.top_y),
-                        _ => {}
-                    }
-                }
-            }
-
-            if let Some(floor_y) = best_floor {
-                // Pickup items that spin/bob get a bit more height so they
-                // float slightly above the ground (matches original engine).
-                let pickup_extra = if tn.ends_with("Item_t") || tn == "CPickupTrigger" { 15.0 } else { 0.0 };
-                // Place model bottom at floor_y + offset:
-                let snapped_y = floor_y - model_min_y + FLOOR_SNAP_OFFSET + pickup_extra;
-                // Record this entity so future objects can stack on top.
-                snapped_entities.push(SnappedEntity {
-                    x: pos.x,
-                    z: pos.z,
-                    radius_xz: model_radius_xz,
-                    top_y: snapped_y + model_max_y,
-                });
-                Vector3::new(pos.x, snapped_y, pos.z)
-            } else {
-                pos
-            }
-        } else {
-            pos
         };
 
         // DAT rotation property stores Euler angles (radians), NOT a quaternion.
@@ -2026,8 +1888,8 @@ fn read_lt_string<R: Read>(reader: &mut R) -> Result<String> {
     Ok(String::from_utf8_lossy(&buffer).to_string())
 }
 
-fn read_abc_vector<R: Read>(reader: &mut R) -> Result<AbcVector> {
-    Ok(AbcVector {
+fn read_abc_vector<R: Read>(reader: &mut R) -> Result<Vector3> {
+    Ok(Vector3 {
         x: reader.read_f32::<LittleEndian>()?,
         y: reader.read_f32::<LittleEndian>()?,
         z: reader.read_f32::<LittleEndian>()?,

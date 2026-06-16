@@ -13,6 +13,8 @@ use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 use thiserror::Error;
 
+pub use crate::util::math::{Vector2, Vector3, Quaternion};
+
 /// DAT version constant for KISS Psycho Circus
 pub const DAT_VERSION_PSYCHO: u32 = 127;
 
@@ -33,85 +35,7 @@ pub enum DatError {
 
 pub type Result<T> = std::result::Result<T, DatError>;
 
-//******************************************************************/
-//
-// Basic Types
-//
-//******************************************************************/
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Vector3 {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
-}
-
-impl Vector3 {
-    pub fn new(x: f32, y: f32, z: f32) -> Self {
-        Self { x, y, z }
-    }
-
-    pub fn to_array(&self) -> [f32; 3] {
-        [self.x, self.y, self.z]
-    }
-
-    pub fn dot(&self, other: &Vector3) -> f32 {
-        self.x * other.x + self.y * other.y + self.z * other.z
-    }
-
-    pub fn cross(&self, other: &Vector3) -> Vector3 {
-        Vector3 {
-            x: self.y * other.z - self.z * other.y,
-            y: self.z * other.x - self.x * other.z,
-            z: self.x * other.y - self.y * other.x,
-        }
-    }
-
-    pub fn normalized(&self) -> Vector3 {
-        let len = (self.x * self.x + self.y * self.y + self.z * self.z).sqrt();
-        if len > 0.0 {
-            Vector3 {
-                x: self.x / len,
-                y: self.y / len,
-                z: self.z / len,
-            }
-        } else {
-            *self
-        }
-    }
-
-    pub fn sub(&self, other: &Vector3) -> Vector3 {
-        Vector3 {
-            x: self.x - other.x,
-            y: self.y - other.y,
-            z: self.z - other.z,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Vector2 {
-    pub x: f32,
-    pub y: f32,
-}
-
-impl Vector2 {
-    pub fn new(x: f32, y: f32) -> Self {
-        Self { x, y }
-    }
-
-    pub fn to_array(&self) -> [f32; 2] {
-        [self.x, self.y]
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Quaternion {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
-    pub w: f32,
-}
+// Basic math types are provided from `crate::util::math`
 
 //******************************************************************/
 //

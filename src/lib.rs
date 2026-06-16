@@ -1,5 +1,8 @@
 #![allow(non_snake_case)]
 
+#[path = "kiss_engine/util/mod.rs"]
+pub mod util;
+
 #[path = "kiss_engine/Resources/dat/dat.rs"]
 pub mod dat;
 
@@ -9,7 +12,7 @@ pub mod dat_mesh;
 #[path = "kiss_engine/Mechanics/objects/game_objects.rs"]
 pub mod game_objects;
 
-// ── Individual object modules ────────────────────────────────────────────────
+// Individual object modules
 
 #[path = "kiss_engine/Mechanics/objects/object_utils.rs"]
 pub(crate) mod object_utils;
@@ -59,7 +62,7 @@ pub mod CPickupItem;
 #[path = "kiss_engine/Mechanics/objects/CCreature.rs"]
 pub mod CCreature;
 
-// ── Other Modules ────────────────────────────────────────────────
+// Other Modules 
 
 #[path = "kiss_engine/Mechanics/levelscripting/scripted_sequence.rs"]
 pub mod scripted_sequence;
@@ -82,7 +85,7 @@ pub mod egui_renderer;
 #[path = "kiss_engine/Resources/pcx.rs"]
 pub mod pcx;
 
-#[path = "kiss_engine/Mechanics/collision/collision.rs"]
+#[path = "kiss_engine/Mechanics/collision/KCollision.rs"]
 pub mod collision;
 
 #[path = "kiss_engine/Rendering/OcclusionCulling.rs"]
@@ -112,6 +115,6 @@ pub mod abc;
 #[path = "kiss_engine/Rendering/vulkan/mod.rs"]
 pub mod vulkan;
 
-// ── Enemies ────────────────────────────────────────────────
+// Enemies 
 #[path = "kiss_engine/Mechanics/enemies/normal_enemies/headless.rs"]
 pub mod headless_enemy;

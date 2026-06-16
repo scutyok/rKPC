@@ -32,6 +32,8 @@ use rustKPC::types::*;
 use rustKPC::vulkan;
 use rustKPC::world_chooser::{LoadingState, WorldChooser};
 use rustKPC::world_loader::load_dat_model;
+use rustKPC::util::geometry::*;
+use rustKPC::util::math::*;
 
 const SKYBOX_HORIZONTAL_SIZE: f32 = 5000.0;
 const SKYBOX_Z_RAISE: f32 = 1.0;
@@ -84,7 +86,7 @@ pub struct App {
     // Game objects
     pub game_objects: GameObjectManager,
     /// Entity cylinders for solid objects (barrels, creatures) — player can't walk through.
-    pub entity_cylinders: Vec<collision::EntityCylinder>,
+    pub entity_cylinders: Vec<EntityCylinder>,
     /// Total elapsed time in seconds (for torch flicker etc.)
     pub elapsed_time: f32,
     // Fog
@@ -617,8 +619,8 @@ impl App {
                 } else {
                     0.0
                 };
-                let cam_eye = self.camera.position + vec3(0.0, 0.0, eye_z);
-                let sky_model = Mat4::from_translation(cam_eye + vec3(0.0, 0.0, SKYBOX_Z_RAISE))
+                let cam_eye = self.camera.position + Vector3::new(0.0, 0.0, eye_z);
+                let sky_model = Mat4::from_translation((cam_eye + Vector3::new(0.0, 0.0, SKYBOX_Z_RAISE)).into())
                     * Mat4::from_scale(sky_scale)
                     * Mat4::from_translation(-vec3(sky_t[0], sky_t[1], sky_t[2]));
                 let sky_model_bytes = std::slice::from_raw_parts(
@@ -1221,16 +1223,16 @@ impl App {
                 };
 
                 let stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 255, 0));
-                if let (Some(p0), Some(p1)) = (project(origin), project(left_end)) {
+                if let (Some(p0), Some(p1)) = (project(origin.into()), project(left_end.into())) {
                     painter.line_segment([p0, p1], stroke);
                 }
-                if let (Some(p0), Some(p1)) = (project(origin), project(right_end)) {
+                if let (Some(p0), Some(p1)) = (project(origin.into()), project(right_end.into())) {
                     painter.line_segment([p0, p1], stroke);
                 }
                 let front_end = origin + front_flat * ray_len;
                 let front_stroke =
                     egui::Stroke::new(1.0, egui::Color32::from_rgb(0, 180, 0));
-                if let (Some(p0), Some(p1)) = (project(origin), project(front_end)) {
+                if let (Some(p0), Some(p1)) = (project(origin.into()), project(front_end.into())) {
                     painter.line_segment([p0, p1], front_stroke);
                 }
             }

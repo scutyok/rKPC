@@ -12,10 +12,11 @@
 //******************************************************************/
 
 use crate::abc::PlacedAbcObject;
-use crate::dat::WorldObject;
+use crate::dat::{PropertyValue, WorldObject};
 use crate::LightObj::Light;
 use crate::object_utils::{dist3, hide_draw_group, time_to_fraction};
 use crate::types::DrawGroup;
+use crate::util::math::*;
 
 use crate::CBarrel::{self, BarrelObject, BarrelState, EXPLOSION_FLASH_DURATION};
 use crate::CCrate::{self, CrateObject, CrateState};
@@ -23,14 +24,15 @@ use crate::CDoorSliding::{self, DoorObject};
 use crate::CLadder::{self, LadderObject};
 use crate::CRotatingCeilingFan::{self, FanObject};
 use crate::CSwitchRotating::{self, SwitchObject, INTERACT_RADIUS};
-use crate::CTorch::{self, TorchObject};
+use crate::CTorch::{self, SpriteEffectObject, TorchObject};
 use crate::CWater::{self, WaterObject};
 use crate::CWindow::{self, WindowObject, WindowState};
 use crate::DemoSkyWorldModel::{SkyModelInfo, SkyWorldModelObject};
 use crate::OutsideDef::OutsideDefObject;
 use crate::CPickupItem::{self, PickupItemObject};
 use crate::CCreature::{self, CreatureObject};
-use crate::scripted_sequence::{BspDoor, BspDoorState, ScriptRunner, ScriptCommand};
+use crate::scripted_sequence::{BspDoor, BspDoorState, DoorOp, ScriptCommand, ScriptRunner};
+use crate::trigger::{TriggerActivation, TriggerDef};
 
 //******************************************************************/
 //
@@ -77,6 +79,7 @@ pub enum GameObject {
     Door(DoorObject),
     Switch(SwitchObject),
     Torch(TorchObject),
+    SpriteEffect(SpriteEffectObject),
     Fan(FanObject),
     Window(WindowObject),
     Water(WaterObject),
@@ -96,6 +99,7 @@ impl GameObject {
             Self::Door(o) => Some(o.position),
             Self::Switch(o) => Some(o.position),
             Self::Torch(o) => Some(o.position),
+            Self::SpriteEffect(o) => Some(o.position),
             Self::Fan(o) => Some(o.position),
             Self::Window(o) => Some(o.position),
             Self::Pickup(o) => Some(o.position),
@@ -118,6 +122,7 @@ pub struct ScriptTrigger {
     pub name: String,
     pub min: [f32; 3],
     pub max: [f32; 3],
+    pub actions: Vec<ScriptCommand>,
     pub activated: bool,
 }
 
@@ -139,8 +144,8 @@ impl ScriptTrigger {
 pub struct BspSwitch {
     pub name: String,
     pub center: [f32; 3],
-    /// SCR script trigger names this switch activates (resolved from CScriptObject chain).
-    pub script_targets: Vec<String>,
+    /// Commands this switch activates, resolved from DAT command properties.
+    pub actions: Vec<ScriptCommand>,
     pub activated: bool,
     pub draw_groups: Vec<usize>,
 }
@@ -153,14 +158,15 @@ pub struct GameObjectManager {
     pub player_outside: bool,
     pub bsp_doors: Vec<BspDoor>,
     pub scripts: Vec<(String, ScriptRunner)>,
+    pub triggers: Vec<TriggerDef>,
     pub script_triggers: Vec<ScriptTrigger>,
     pub bsp_switches: Vec<BspSwitch>,
     // Reusable temporaries to avoid per-frame heap allocations
     pub tmp_pending: Vec<([f32; 3], f32, f32, [f32; 3])>,
     pub tmp_fired_commands: Vec<ScriptCommand>,
     pub tmp_targets_to_open: Vec<String>,
-    pub tmp_bsp_switch_targets: Vec<String>,
-    pub tmp_trigger_script_targets: Vec<String>,
+    pub tmp_bsp_switch_targets: Vec<ScriptCommand>,
+    pub tmp_trigger_script_targets: Vec<ScriptCommand>,
     pub tmp_newly_exploding: Vec<usize>,
 }
 
@@ -174,6 +180,7 @@ impl GameObjectManager {
             player_outside: false,
             bsp_doors: Vec::new(),
             scripts: Vec::new(),
+            triggers: Vec::new(),
             script_triggers: Vec::new(),
             bsp_switches: Vec::new(),
             tmp_pending: Vec::new(),
@@ -196,7 +203,7 @@ impl GameObjectManager {
         sky_models: &[SkyModelInfo],
         trigger_volumes: &[(String, [f32; 3], [f32; 3])],
         door_collision_ranges: &[(String, usize, usize)],
-        collision_positions: &[cgmath::Vector3<f32>],
+        collision_positions: &[Vector3],
         scale: f32,
         creature_anim_data: &[(usize, Vec<u32>, Vec<u32>, u32)],
     ) -> Self {
@@ -356,6 +363,37 @@ impl GameObjectManager {
             }
             let nl = name.to_lowercase();
             if nl.starts_with("door") || nl.starts_with("freezedoor") {
+                let (slide_dir, slide_distance) = dat_objects
+                    .iter()
+                    .find(|o| {
+                        matches!(o.get_property("Name"), Some(PropertyValue::String(n)) if n.to_lowercase() == nl)
+                    })
+                    .and_then(|o| {
+                        match (o.get_property("Pos"), o.get_property("open_position")) {
+                            (
+                                Some(PropertyValue::Vector(pos)),
+                                Some(PropertyValue::Vector(open_pos)),
+                            ) => {
+                                let delta = [
+                                    (open_pos.x - pos.x) * scale,
+                                    (open_pos.z - pos.z) * scale,
+                                    (open_pos.y - pos.y) * scale,
+                                ];
+                                let len = (delta[0] * delta[0]
+                                    + delta[1] * delta[1]
+                                    + delta[2] * delta[2])
+                                    .sqrt();
+                                if len > 1e-5 {
+                                    Some(([delta[0] / len, delta[1] / len, delta[2] / len], len))
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        }
+                    })
+                    .unwrap_or(([0.0, 0.0, 1.0], *z_height));
+
                 // Find the collision vertex range for this door
                 let coll_range = door_collision_ranges.iter()
                     .find(|(n, _, _)| n == &nl);
@@ -367,7 +405,8 @@ impl GameObjectManager {
                 mgr.bsp_doors.push(BspDoor {
                     name: nl,
                     draw_groups: dgs.clone(),
-                    slide_distance: *z_height,
+                    slide_distance,
+                    slide_dir,
                     slide_offset: 0.0,
                     state: BspDoorState::Closed,
                     collision_vertex_range: coll_vertex_range,
@@ -383,15 +422,7 @@ impl GameObjectManager {
             ));
         }
 
-        // Register trigger volumes for script activation via E key
-        for (name, vmin, vmax) in trigger_volumes {
-            mgr.script_triggers.push(ScriptTrigger {
-                name: name.to_lowercase(),
-                min: *vmin,
-                max: *vmax,
-                activated: false,
-            });
-        }
+        let _ = trigger_volumes;
 
         log::info!(
             "GameObjectManager: {} interactive + {} sky objects",
@@ -510,15 +541,26 @@ impl GameObjectManager {
         // Dispatch fired script commands
         let fired = std::mem::take(&mut self.tmp_fired_commands);
         for cmd in fired {
-            match cmd {
-                ScriptCommand::TriggerDoorOpen { door_name } => {
-                    for door in &mut self.bsp_doors {
-                        if door.name == door_name {
-                            door.open();
-                        }
-                    }
-                }
+            self.dispatch_script_command(cmd, draw_groups);
+        }
+
+        self.tmp_trigger_script_targets.clear();
+        for trigger in &mut self.triggers {
+            if trigger.activation == TriggerActivation::Touch
+                && trigger.can_fire()
+                && trigger.contains(player_pos)
+            {
+                println!(
+                    "[trigger] touch '{}' ({:?}) -> {:?}",
+                    trigger.name, trigger.source, trigger.actions
+                );
+                trigger.activated = true;
+                self.tmp_trigger_script_targets.extend(trigger.actions.clone());
             }
+        }
+        let touch_commands = std::mem::take(&mut self.tmp_trigger_script_targets);
+        for command in touch_commands {
+            self.dispatch_script_command(command, draw_groups);
         }
 
         self.player_in_water = false;
@@ -535,7 +577,7 @@ impl GameObjectManager {
     }
 
     /// Update collision mesh vertices for any BSP doors that are sliding open.
-    pub fn update_door_collision(&self, collision_positions: &mut [cgmath::Vector3<f32>]) {
+    pub fn update_door_collision(&self, collision_positions: &mut [Vector3]) {
         for door in &self.bsp_doors {
             door.update_collision(collision_positions);
         }
@@ -567,45 +609,95 @@ impl GameObjectManager {
         }
 
         // Start scripts whose trigger name matches a switch target (case-insensitive)
-        for target in &self.tmp_targets_to_open {
-            for (name, runner) in &mut self.scripts {
-                if name.eq_ignore_ascii_case(target) {
-                    runner.start();
-                }
-            }
+        let switch_targets = std::mem::take(&mut self.tmp_targets_to_open);
+        for target in switch_targets {
+            self.dispatch_script_command(
+                ScriptCommand::StartScript {
+                    script_name: target.to_lowercase(),
+                },
+                draw_groups,
+            );
         }
 
-        // BSP switches (CSwitchSlide/CSwitchRotating BSP sub-models)
-        self.tmp_bsp_switch_targets.clear();
-        for sw in &mut self.bsp_switches {
-            if !sw.activated && dist3(player_pos, sw.center) < INTERACT_RADIUS {
-                sw.activated = true;
-                self.tmp_bsp_switch_targets.extend(sw.script_targets.clone());
-            }
-        }
-        for target in &self.tmp_bsp_switch_targets {
-            for (name, runner) in &mut self.scripts {
-                if name == target {
-                    runner.start();
-                }
-            }
-        }
-
-        // Check if player is inside a trigger volume and start matching script
+        // Generic factory-built use triggers: BSP switches, trigger volumes,
+        // and any future DAT-driven use targets share this path.
         self.tmp_trigger_script_targets.clear();
-        for trigger in &mut self.script_triggers {
-            if !trigger.activated && trigger.contains(player_pos) {
+        for trigger in &mut self.triggers {
+            if trigger.activation == TriggerActivation::Use
+                && trigger.can_fire()
+                && trigger.can_use_from(player_pos)
+            {
+                println!(
+                    "[trigger] use '{}' ({:?}) -> {:?}",
+                    trigger.name, trigger.source, trigger.actions
+                );
                 trigger.activated = true;
-                self.tmp_trigger_script_targets.push(trigger.name.clone());
+                self.tmp_trigger_script_targets.extend(trigger.actions.clone());
             }
         }
-        for tname in &self.tmp_trigger_script_targets {
-            for (script_name, runner) in &mut self.scripts {
-                // Match if script name appears in trigger name or vice versa
-                if tname.contains(script_name.as_str()) || script_name.contains(tname.as_str()) {
-                    runner.start();
+        let trigger_commands = std::mem::take(&mut self.tmp_trigger_script_targets);
+        for command in trigger_commands {
+            self.dispatch_script_command(command, draw_groups);
+        }
+    }
+
+    fn dispatch_script_command(&mut self, command: ScriptCommand, draw_groups: &mut Vec<DrawGroup>) {
+        match command {
+            ScriptCommand::StartScript { script_name } => self.start_script(&script_name),
+            ScriptCommand::TriggerDoor { door_name, op } => match op {
+                DoorOp::Open => self.open_named_door(&door_name),
+                DoorOp::Close => self.close_named_door(&door_name),
+            },
+            ScriptCommand::TriggerGeneric { target_name } => {
+                self.start_script(&target_name);
+                self.open_named_door(&target_name);
+            }
+            ScriptCommand::ItemSpawn { target_name } => {
+                log::info!("item_spawn '{}' is not implemented yet", target_name);
+            }
+            ScriptCommand::SetObjectEnabled { target_name, enabled } => {
+                log::info!("script/object enable '{}' -> {} is not implemented yet", target_name, enabled);
+            }
+            ScriptCommand::PlaySound { path, local } => {
+                let _ = draw_groups;
+                log::info!("play sound '{}' local={} is not implemented yet", path, local);
+            }
+        }
+    }
+
+    fn start_script(&mut self, target: &str) {
+        for (name, runner) in &mut self.scripts {
+            if name.eq_ignore_ascii_case(target) {
+                runner.start();
+            }
+        }
+    }
+
+    fn open_named_door(&mut self, target: &str) {
+        for door in &mut self.bsp_doors {
+            if door.name.eq_ignore_ascii_case(target) {
+                door.open();
+            }
+        }
+        for obj in &mut self.objects {
+            if let GameObject::Door(door) = obj {
+                if door.trigger_name.eq_ignore_ascii_case(target) {
+                    door.open();
                 }
             }
+        }
+    }
+
+    fn close_named_door(&mut self, target: &str) {
+        for obj in &mut self.objects {
+            if let GameObject::Door(door) = obj {
+                if door.trigger_name.eq_ignore_ascii_case(target) {
+                    door.close();
+                }
+            }
+        }
+        if self.bsp_doors.iter().any(|door| door.name.eq_ignore_ascii_case(target)) {
+            log::info!("BSP door close '{}' is not implemented yet", target);
         }
     }
 

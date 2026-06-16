@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
 use anyhow::{Result, anyhow};
-use cgmath::{vec2, vec3};
+use crate::util::math::{Vector2, Vector3};
 use log::*;
 
 use crate::abc;
-use crate::collision;
+use crate::util::geometry;
 use crate::dat;
 use crate::dat::PropertyValue;
 use crate::dat_mesh;
@@ -41,7 +41,7 @@ pub struct LevelFogSettings {
 pub struct LoadedWorld {
     pub lights: Vec<LightObj::Light>,
     /// Collision mesh positions (includes invisible surfaces for blocking).
-    pub collision_positions: Vec<cgmath::Vector3<f32>>,
+    pub collision_positions: Vec<Vector3>,
     /// Collision mesh indices.
     pub collision_indices: Vec<u32>,
     /// Interactive game objects parsed from DAT WorldObjects.
@@ -49,7 +49,7 @@ pub struct LoadedWorld {
     /// Fog settings from the level's WorldProperties object, if present.
     pub fog: Option<LevelFogSettings>,
     /// Entity cylinders for solid objects (barrels, headless enemies) in Vulkan coords.
-    pub entity_cylinders: Vec<collision::EntityCylinder>,
+    pub entity_cylinders: Vec<geometry::EntityCylinder>,
     /// Draw-group indices that belong to trigger / volume sub-models (toggleable).
     pub trigger_draw_groups: Vec<(usize, u32)>,
     /// Triggers and volumes parsed from the DAT objects and sub-world models.
@@ -166,10 +166,10 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
         .extract_world_by_index(world_model_index)
         .ok_or_else(|| anyhow!("World model index {} not found (collision)", world_model_index))?;
 
-    let mut collision_positions: Vec<cgmath::Vector3<f32>> = collision_mesh
+    let mut collision_positions: Vec<Vector3> = collision_mesh
         .vertices
         .iter()
-        .map(|v| cgmath::vec3(v.pos[0], v.pos[1], v.pos[2]))
+        .map(|v| Vector3::new(v.pos[0], v.pos[1], v.pos[2]))
         .collect();
     let mut collision_indices: Vec<u32> = collision_mesh.indices;
 
@@ -210,15 +210,15 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
             };
 
         for dat_vert in &textured_mesh.vertices {
-            let normal = vec3(
+            let normal = Vector3::new(
                 dat_vert.normal[0],
                 dat_vert.normal[2],
                 dat_vert.normal[1],
             );
             let vertex = Vertex {
-                pos: vec3(dat_vert.pos[0], dat_vert.pos[1], dat_vert.pos[2]),
-                color: vec3(dat_vert.color[0], dat_vert.color[1], dat_vert.color[2]),
-                tex_coord: vec2(
+                pos: Vector3::new(dat_vert.pos[0], dat_vert.pos[1], dat_vert.pos[2]),
+                color: Vector3::new(dat_vert.color[0], dat_vert.color[1], dat_vert.color[2]),
+                tex_coord: Vector2::new(
                     dat_vert.tex_coord[0] / tex_width as f32,
                     dat_vert.tex_coord[1] / tex_height as f32,
                 ),
@@ -353,10 +353,10 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
 
         for v in &abc_obj.mesh.vertices {
             data.vertices.push(Vertex {
-                pos: vec3(v.pos[0], v.pos[1], v.pos[2]),
-                color: vec3(1.0, 1.0, 1.0),
-                tex_coord: vec2(v.tex_coord[0], v.tex_coord[1]),
-                normal: vec3(v.normal[0], v.normal[1], v.normal[2]),
+                pos: Vector3::new(v.pos[0], v.pos[1], v.pos[2]),
+                color: Vector3::new(1.0, 1.0, 1.0),
+                tex_coord: Vector2::new(v.tex_coord[0], v.tex_coord[1]),
+                normal: Vector3::new(v.normal[0], v.normal[1], v.normal[2]),
             });
         }
 
@@ -382,10 +382,10 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
 
                 for v in &kf_mesh.vertices {
                     data.vertices.push(Vertex {
-                        pos: vec3(v.pos[0], v.pos[1], v.pos[2]),
-                        color: vec3(1.0, 1.0, 1.0),
-                        tex_coord: vec2(v.tex_coord[0], v.tex_coord[1]),
-                        normal: vec3(v.normal[0], v.normal[1], v.normal[2]),
+                        pos: Vector3::new(v.pos[0], v.pos[1], v.pos[2]),
+                        color: Vector3::new(1.0, 1.0, 1.0),
+                        tex_coord: Vector2::new(v.tex_coord[0], v.tex_coord[1]),
+                        normal: Vector3::new(v.normal[0], v.normal[1], v.normal[2]),
                     });
                 }
 
@@ -592,7 +592,7 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
                 if is_collision_submodel {
                     let base = collision_positions.len() as u32;
                     for v in &textured_mesh.vertices {
-                        collision_positions.push(cgmath::vec3(v.pos[0], v.pos[1], v.pos[2]));
+                        collision_positions.push(Vector3::new(v.pos[0], v.pos[1], v.pos[2]));
                     }
                     for &i in &textured_mesh.indices {
                         collision_indices.push(base + i);
@@ -623,10 +623,10 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
 
                 for v in &textured_mesh.vertices {
                     data.vertices.push(Vertex {
-                        pos: vec3(v.pos[0], v.pos[1], v.pos[2]),
-                        color: vec3(v.color[0], v.color[1], v.color[2]),
-                        tex_coord: vec2(v.tex_coord[0] / tex_w as f32, v.tex_coord[1] / tex_h as f32),
-                        normal: vec3(v.normal[0], v.normal[1], v.normal[2]),
+                        pos: Vector3::new(v.pos[0], v.pos[1], v.pos[2]),
+                        color: Vector3::new(v.color[0], v.color[1], v.color[2]),
+                        tex_coord: Vector2::new(v.tex_coord[0] / tex_w as f32, v.tex_coord[1] / tex_h as f32),
+                        normal: Vector3::new(v.normal[0], v.normal[1], v.normal[2]),
                     });
                 }
 
@@ -717,18 +717,48 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
     //
     //******************************************************************/
 
-    const FLAME_FRAMES: [&str; 6] = [
-        "REZ/SPRITETEXTURES/FLAMETEST/TORCH1.DTX",
-        "REZ/SPRITETEXTURES/FLAMETEST/TORCH2.DTX",
-        "REZ/SPRITETEXTURES/FLAMETEST/TORCH3.DTX",
-        "REZ/SPRITETEXTURES/FLAMETEST/TORCH4.DTX",
-        "REZ/SPRITETEXTURES/FLAMETEST/TORCH5.DTX",
-        "REZ/SPRITETEXTURES/FLAMETEST/TORCH6.DTX",
+    // Prefer the TRCH* frames (they look like the original in-game torch),
+    // fall back to TORCH* if TRCH* not present.
+    let flame_candidates = [
+        [
+            "REZ/SPRITETEXTURES/FLAMETEST/TRCH1.DTX",
+            "REZ/SPRITETEXTURES/FLAMETEST/TRCH2.DTX",
+            "REZ/SPRITETEXTURES/FLAMETEST/TRCH3.DTX",
+            "REZ/SPRITETEXTURES/FLAMETEST/TRCH4.DTX",
+            "REZ/SPRITETEXTURES/FLAMETEST/TRCH5.DTX",
+            "REZ/SPRITETEXTURES/FLAMETEST/TRCH6.DTX",
+        ],
+        [
+            "REZ/SPRITETEXTURES/FLAMETEST/TORCH1.DTX",
+            "REZ/SPRITETEXTURES/FLAMETEST/TORCH2.DTX",
+            "REZ/SPRITETEXTURES/FLAMETEST/TORCH3.DTX",
+            "REZ/SPRITETEXTURES/FLAMETEST/TORCH4.DTX",
+            "REZ/SPRITETEXTURES/FLAMETEST/TORCH5.DTX",
+            "REZ/SPRITETEXTURES/FLAMETEST/TORCH6.DTX",
+        ],
     ];
+    let mut chosen_frames: [&str; 6] = ["", "", "", "", "", ""];
+    for cand in &flame_candidates {
+        if std::path::Path::new(cand[0]).exists() {
+            for i in 0..6 { chosen_frames[i] = cand[i]; }
+            break;
+        }
+    }
+    // If neither candidate set found, fall back to TORCH* names (may be missing)
+    if chosen_frames[0].is_empty() {
+        chosen_frames = [
+            "REZ/SPRITETEXTURES/FLAMETEST/TORCH1.DTX",
+            "REZ/SPRITETEXTURES/FLAMETEST/TORCH2.DTX",
+            "REZ/SPRITETEXTURES/FLAMETEST/TORCH3.DTX",
+            "REZ/SPRITETEXTURES/FLAMETEST/TORCH4.DTX",
+            "REZ/SPRITETEXTURES/FLAMETEST/TORCH5.DTX",
+            "REZ/SPRITETEXTURES/FLAMETEST/TORCH6.DTX",
+        ];
+    }
     // Register all 6 frame textures (if not already present) and record the
     // index of the first frame so frames are at base, base+1 … base+5.
     let flame_base_tex_index = texture_names.len();
-    for &frame_path in &FLAME_FRAMES {
+    for frame_path in &chosen_frames {
         let name = frame_path.to_string();
         if !texture_name_to_index.contains_key(&name) {
             let idx = texture_names.len();
@@ -757,7 +787,8 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
     let mut torch_flames: Vec<(usize, usize, usize)> = Vec::new();
 
     for (i, abc) in placed_abc_objects.iter().enumerate() {
-        if abc.type_name != "CTorch" {
+        // Support both CTorch and CTorchColored ABC types (maps may use either)
+        if abc.type_name != "CTorch" && abc.type_name != "CTorchColored" {
             continue;
         }
         let pos = abc.position; // already in Vulkan/renderer space
@@ -782,10 +813,10 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
 
         for (p, uv) in &quad_verts {
             data.vertices.push(Vertex {
-                pos: vec3(p[0], p[1], p[2]),
-                color: vec3(1.0, 1.0, 1.0), // no pre-baked shadow on flame sprite
-                tex_coord: vec2(uv[0], uv[1]),
-                normal: vec3(0.0, 1.0, 0.0),
+                pos: Vector3::new(p[0], p[1], p[2]),
+                color: Vector3::new(1.0, 1.0, 1.0), // no pre-baked shadow on flame sprite
+                tex_coord: Vector2::new(uv[0], uv[1]),
+                normal: Vector3::new(0.0, 1.0, 0.0),
             });
         }
         // Two triangles: 0-1-2, 0-2-3
@@ -882,12 +913,12 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
                     let group_idx_base = data.indices.len() as u32;
 
                     for dat_vert in &textured_mesh.vertices {
-                        let normal = vec3(
+                        let normal = Vector3::new(
                             dat_vert.normal[0],
                             dat_vert.normal[2],
                             dat_vert.normal[1],
                         );
-                        let pos = vec3(dat_vert.pos[0], dat_vert.pos[1], dat_vert.pos[2]);
+                        let pos = Vector3::new(dat_vert.pos[0], dat_vert.pos[1], dat_vert.pos[2]);
                         data.sky_bounds_min[0] = data.sky_bounds_min[0].min(pos.x);
                         data.sky_bounds_min[1] = data.sky_bounds_min[1].min(pos.y);
                         data.sky_bounds_min[2] = data.sky_bounds_min[2].min(pos.z);
@@ -897,8 +928,8 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
 
                         data.vertices.push(Vertex {
                             pos,
-                            color: vec3(dat_vert.color[0], dat_vert.color[1], dat_vert.color[2]),
-                            tex_coord: vec2(
+                            color: Vector3::new(dat_vert.color[0], dat_vert.color[1], dat_vert.color[2]),
+                            tex_coord: Vector2::new(
                                 dat_vert.tex_coord[0] / tex_width as f32,
                                 dat_vert.tex_coord[1] / tex_height as f32,
                             ),
@@ -1124,7 +1155,7 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
                 };
 
                 if let Ok(contents) = std::fs::read_to_string(entry.path()) {
-                    let commands = scripted_sequence::parse_scr(&contents);
+                    let commands = scripted_sequence::parse_scr_with_prefix(&contents, file_stem);
                     println!("  Loaded SCR '{}' → trigger='{}' ({} commands)",
                         fname_str, trigger_name, commands.len());
                     game_objects.scripts.push((
@@ -1183,17 +1214,29 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
                     (o.type_name == "CSwitchSlide" || o.type_name == "CSwitchRotating")
                     && matches!(o.get_property("Name"), Some(PropertyValue::String(n)) if n.to_lowercase() == nl)
                 );
-                let mut script_targets = Vec::new();
+                let mut actions = Vec::new();
                 if let Some(obj) = dat_obj {
                     for i in 1..=4 {
                         let cmd_key = format!("command{}", i);
                         if let Some(PropertyValue::String(cmd)) = obj.get_property(&cmd_key) {
+                            let parsed = scripted_sequence::parse_dat_command(
+                                cmd,
+                                file_stem,
+                                &script_object_scr,
+                            );
+                            if !parsed.is_empty() {
+                                println!("  BSP switch '{}' -> command '{}' -> {:?}", name, cmd, parsed);
+                                actions.extend(parsed);
+                                continue;
+                            }
                             let parts: Vec<&str> = cmd.split_whitespace().collect();
                             if parts.len() >= 3 && parts[1] == "script_object_play" {
                                 let target_name = parts[2].to_lowercase();
                                 // Resolve through CScriptObject chain
                                 if let Some(scr_names) = script_object_scr.get(&target_name) {
-                                    script_targets.extend(scr_names.clone());
+                                    actions.extend(scr_names.iter().cloned().map(|script_name| {
+                                        scripted_sequence::ScriptCommand::StartScript { script_name }
+                                    }));
                                     println!("  BSP switch '{}' → script_object '{}' → scripts: {:?}",
                                         name, target_name, scr_names);
                                 }
@@ -1201,12 +1244,12 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
                         }
                     }
                 }
-                if !script_targets.is_empty() {
+                if !actions.is_empty() {
                     game_objects.bsp_switches.push(
                         crate::game_objects::BspSwitch {
                             name: nl,
                             center: *pivot,
-                            script_targets,
+                            actions,
                             activated: false,
                             draw_groups: dgs.clone(),
                         }
@@ -1223,11 +1266,22 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
                 matches!(o.get_property("Name"), Some(PropertyValue::String(n)) if n.to_lowercase() == trigger.name)
             });
             if let Some(obj) = dat_obj {
+                let mut actions = Vec::new();
                 for i in 1..=4 {
-                    let cmd_key = format!("command{}", i);
-                    if let Some(PropertyValue::String(cmd)) = obj.get_property(&cmd_key) {
-                        let parts: Vec<&str> = cmd.split_whitespace().collect();
-                        if parts.len() >= 3 {
+                        let cmd_key = format!("command{}", i);
+                        if let Some(PropertyValue::String(cmd)) = obj.get_property(&cmd_key) {
+                            let parsed = scripted_sequence::parse_dat_command(
+                                cmd,
+                                file_stem,
+                                &script_object_scr,
+                            );
+                            if !parsed.is_empty() {
+                                println!("  Trigger volume '{}' -> command '{}' -> {:?}", trigger.name, cmd, parsed);
+                                actions.extend(parsed);
+                                continue;
+                            }
+                            let parts: Vec<&str> = cmd.split_whitespace().collect();
+                            if parts.len() >= 3 {
                             if parts[1] == "scriptplay" {
                                 let scr_path = parts[2].replace('\\', "/").to_lowercase();
                                 if let Some(filename) = scr_path.rsplit('/').next() {
@@ -1240,19 +1294,26 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
                                     };
                                     // Store the resolved script name in the trigger's name for matching
                                     println!("  Trigger volume '{}' → scriptplay → '{}'", trigger.name, scr_trigger);
-                                    trigger.name = scr_trigger;
+                                    actions.push(scripted_sequence::ScriptCommand::StartScript {
+                                        script_name: scr_trigger,
+                                    });
                                 }
                             } else if parts[1] == "script_object_play" {
                                 let target = parts[2].to_lowercase();
                                 if let Some(scr_names) = script_object_scr.get(&target) {
                                     if let Some(first) = scr_names.first() {
                                         println!("  Trigger volume → script_object '{}' → '{}'", target, first);
-                                        trigger.name = first.clone();
+                                        actions.push(scripted_sequence::ScriptCommand::StartScript {
+                                            script_name: first.clone(),
+                                        });
                                     }
                                 }
                             }
                         }
                     }
+                }
+                if !actions.is_empty() {
+                    trigger.actions = actions;
                 }
             }
         }
@@ -1262,12 +1323,22 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
         // it to act as an E-key trigger that starts the microphone script.
         for trigger in &mut game_objects.script_triggers {
             if trigger.name == "cslime2" {
-                trigger.name = "microphone".to_string();
+                trigger.actions = vec![scripted_sequence::ScriptCommand::StartScript {
+                    script_name: "microphone".to_string(),
+                }];
             }
         }
 
-        println!("=== Loaded {} scripts, {} BSP doors, {} BSP switches ===",
-            game_objects.scripts.len(), game_objects.bsp_doors.len(), game_objects.bsp_switches.len());
+        game_objects.triggers = crate::trigger::TriggerFactory::new(
+            file_stem,
+            &dat_file,
+            &trigger_volumes,
+            &bsp_submodels,
+        )
+        .build();
+
+        println!("=== Loaded {} scripts, {} BSP doors, {} triggers ===",
+            game_objects.scripts.len(), game_objects.bsp_doors.len(), game_objects.triggers.len());
 
 
     }
@@ -1275,7 +1346,7 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
     // Build entity cylinders for solid objects (barrels, headless enemies).
     // Cylinders match the model shape better than AABBs and produce smooth
     // radial sliding when the player walks into them.
-    let entity_cylinders: Vec<collision::EntityCylinder> = placed_abc_objects.iter()
+    let entity_cylinders: Vec<geometry::EntityCylinder> = placed_abc_objects.iter()
         .filter(|o| o.type_name == "CBarrel" || o.type_name == "CHeadless")
         .filter_map(|o| {
             if o.mesh.vertices.is_empty() { return None; }
@@ -1300,7 +1371,7 @@ pub fn load_dat_model<P: AsRef<std::path::Path>>(
             let half_x = (x_max - x_min) * 0.5;
             let half_y = (y_max - y_min) * 0.5;
             let radius = half_x.min(half_y);
-            Some(collision::EntityCylinder { center_x: cx, center_y: cy, radius, z_min, z_max })
+            Some(geometry::EntityCylinder { center_x: cx, center_y: cy, radius, z_min, z_max })
         })
         .collect();
     log::info!("Built {} entity cylinders for collision", entity_cylinders.len());
