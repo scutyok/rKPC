@@ -29,9 +29,9 @@ It started as a [DLL injection project/D3D9 hook](http://https://github.com/scut
 <h2>How to use (two ways)</h2>
 
 <ol>
-	<li><h3>Compiling</h3>
+	<li><h3>Via Terminal</h3>
   with "cargo run --release"</li>
-	<li><h3>Directly running</h3>
+	<li><h3>Via Bat File</h3>
   open the "run_release.bat" file</li>
 </ol>
 
